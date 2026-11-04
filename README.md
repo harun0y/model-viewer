@@ -1,3 +1,5 @@
-# Model Görüntüleyici
+# Model Viewer
 
-Tarayıcıda çalışan basit 3D model görüntüleyici (GLB, GLTF, FBX, OBJ, DAE, STL, PLY). three.js kullanır.
+Simple in-browser 3D model viewer (GLB, GLTF, FBX, OBJ, DAE, STL, PLY) built with three.js.
+
+Live: https://harun0y.github.io/model-viewer/
