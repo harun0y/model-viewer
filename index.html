@@ -69,6 +69,9 @@
     border: 1px solid var(--line); grid-row: span 2; }
   .mat .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mat .name small { color: #ffb347; }
+  .mat .name em.auto { font-style: normal; font-size: 10.5px; color: #9fc3ff; background: #2f3f5a; border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+  .mat { cursor: pointer; }
+  .mat:hover { outline: 1px solid #ffa31a; }
   select { font: inherit; font-size: 12px; color: var(--text); background: var(--btn); border: 1px solid var(--line);
     border-radius: 4px; padding: 3px 4px; width: 100%; min-width: 0; }
   .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; }
@@ -111,7 +114,8 @@
 <header>
   <button class="icon" id="panelBtn" title="Toggle side panel">☰</button>
   <span class="brand">Model Viewer</span>
-  <button class="primary" id="openBtn" title="Open a model (you can select its textures too)">Open…</button>
+  <button class="primary" id="openBtn" title="Open a model — select its texture images together with it to auto-assign them">Open…</button>
+  <button id="addTexBtn" title="Add texture images to the current model">Textures…</button>
   <span id="fileLabel">No model loaded</span>
   <div class="seg" title="Views (numpad 1 / 3 / 7, Ctrl for the opposite side)">
     <button data-view="front" title="Front (1)">Front</button>
@@ -160,16 +164,15 @@
           <button data-wire="overlay" title="Draw on top of the model (W)">Overlay</button>
           <button data-wire="only" title="Wireframe only (Shift+W)">Only</button>
         </div>
-        <div class="slider"><span class="lbl">Thickness</span><input type="range" id="wireWidth" min="0.25" max="4" step="0.05" value="0.8"><span id="wireWidthVal">0.8</span></div>
-        <div class="slider"><span class="lbl">Opacity</span><input type="range" id="wireOpacity" min="0.05" max="1" step="0.05" value="0.6"><span id="wireOpacityVal">0.6</span></div>
+        <div class="slider"><span class="lbl">Thickness</span><input type="range" id="wireWidth" min="0.25" max="4" step="0.05" value="0.25"><span id="wireWidthVal">0.25</span></div>
+        <div class="slider"><span class="lbl">Opacity</span><input type="range" id="wireOpacity" min="0.05" max="1" step="0.05" value="0.2"><span id="wireOpacityVal">0.2</span></div>
       </div>
     </details>
 
     <details open>
       <summary>Textures</summary>
       <div class="sec">
-        <button id="addTexBtn">Add textures…</button>
-        <div class="hint">Drop images onto the viewport (with the model or afterwards). Matching file names are applied automatically; otherwise pick one per material below.</div>
+        <div class="hint">Select or drop the model together with its images — textures are matched to materials automatically (by file, material and mesh names). You can also add images later with <b>Textures…</b> at the top, or pick one per material below. Hover / click a material to highlight it.</div>
         <div id="matList" class="sec" style="padding:0;gap:6px"></div>
       </div>
     </details>
@@ -279,9 +282,9 @@ const solidMat = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.
 const solidFlatMat = solidMat.clone(); solidFlatMat.flatShading = true;
 
 // Wireframe drawn with barycentric coordinates -> adjustable thickness (WebGL lines are always 1px).
-const wireWidth = { value: 0.8 };
+const wireWidth = { value: 0.25 };
 function makeWireMat(color, extra) {
-  const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide, ...extra });
+  const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide, ...extra });
   m.onBeforeCompile = sh => {
     sh.uniforms.wireWidth = wireWidth;
     sh.vertexShader = 'attribute vec3 bary;\nvarying vec3 vBary;\n' +
@@ -299,11 +302,71 @@ function makeWireMat(color, extra) {
 const wireMat = makeWireMat(0x000000, { depthFunc: THREE.LessEqualDepth });
 const wireOnlyMat = makeWireMat(0xe6e6e6, { depthTest: false });
 
+// ---------- Material highlight (outline + glow) ----------
+const hl = { strength: { value: 0 }, res: { value: new THREE.Vector2(1, 1) } };
+const HL_COLOR = 0xffa31a;
+const HL_NORMAL = `
+  #if defined( USE_ENVMAP ) || defined( USE_SKINNING )
+    vec3 hlN = transformedNormal;
+  #else
+    vec3 hlN = normalMatrix * normal;
+  #endif`;
+const outlineMat = new THREE.MeshBasicMaterial({ color: HL_COLOR, side: THREE.BackSide, transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth });
+outlineMat.onBeforeCompile = sh => {
+  sh.uniforms.hlStrength = hl.strength; sh.uniforms.hlRes = hl.res;
+  sh.vertexShader = 'uniform vec2 hlRes;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+  ${HL_NORMAL}
+  vec2 hlD = (projectionMatrix * vec4(hlN, 0.0)).xy;
+  float hlL = length(hlD);
+  if (hlL > 1e-6) gl_Position.xy += hlD / hlL * (2.5 * 2.0 / hlRes) * gl_Position.w;`);
+  sh.fragmentShader = 'uniform float hlStrength;\n' + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n\tdiffuseColor.a *= clamp(hlStrength * 1.4, 0.0, 1.0);');
+};
+const glowMat = new THREE.MeshBasicMaterial({ color: HL_COLOR, transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
+  blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+glowMat.onBeforeCompile = sh => {
+  sh.uniforms.hlStrength = hl.strength;
+  sh.vertexShader = 'varying vec3 hlNv;\nvarying vec3 hlVp;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+  ${HL_NORMAL}
+  hlNv = hlN; hlVp = mvPosition.xyz;`);
+  sh.fragmentShader = 'uniform float hlStrength;\nvarying vec3 hlNv;\nvarying vec3 hlVp;\n' + sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+	vec3 hlV = isOrthographic ? vec3(0.0, 0.0, 1.0) : normalize(-hlVp);
+	float hlF = 1.0 - abs(dot(normalize(hlNv), hlV));
+	diffuseColor.rgb *= (0.1 + 0.8 * hlF * hlF) * hlStrength;`);
+};
+let hoverMat = null, flash = null;
+function flashMat(m) { flash = { mat: m, t0: performance.now() }; }
+function highlightNow(now) {
+  let mat = null, s = 0;
+  if (flash) {
+    const t = (now - flash.t0) / 1000, T = 1.3;
+    if (t > T) flash = null;
+    else { mat = flash.mat; s = (1 - t / T) * (0.55 + 0.45 * Math.cos(t * Math.PI * 2 * 2)); }
+  }
+  if (hoverMat && (!mat || mat === hoverMat)) { mat = hoverMat; s = Math.max(s, 0.6 + 0.25 * Math.sin(now * 0.006)); }
+  return { mat, s };
+}
+function renderHighlight(mat, s) {
+  const set = records.filter(r => Array.isArray(r.mat) ? r.mat.includes(mat) : r.mat === mat);
+  if (!set.length || s <= 0.01) return;
+  const hidden = [], swapped = [];
+  for (const r of records) if (!set.includes(r) && r.mesh.visible) { r.mesh.visible = false; hidden.push(r); }
+  for (const r of set) { swapped.push([r, r.mesh.geometry]); r.mesh.geometry = r.cache.smooth ??= creasedGeometry(r.geo, Math.PI); }
+  const hv = helpers.visible; helpers.visible = false; scene.background = null;
+  hl.strength.value = s;
+  renderer.getDrawingBufferSize(hl.res.value).divideScalar(renderer.getPixelRatio());
+  if (state.wire !== 'only') { scene.overrideMaterial = outlineMat; renderer.render(scene, cam); }
+  scene.overrideMaterial = glowMat; renderer.render(scene, cam);
+  scene.overrideMaterial = null; scene.background = BG; helpers.visible = hv;
+  for (const r of hidden) r.mesh.visible = true;
+  for (const [r, g] of swapped) r.mesh.geometry = g;
+}
+
 // ---------- Texture library ----------
 const library = [];                 // { name, url, tex: {true, false} }
 const overrides = new Map();        // original material -> library item | null (none)
 const basicCache = new Map();       // original material -> MeshBasicMaterial
 const matFlip = new Map();          // original material -> flipY of its model format
+const autoSet = new Set();          // materials whose texture was picked automatically
 const IMG_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tga', 'avif'];
 const isImage = name => IMG_EXT.includes(extOf(name));
 const stem = name => name.replace(/\.[^.]+$/, '').toLowerCase();
@@ -351,22 +414,119 @@ function toBasic(m) {
   return b;
 }
 
-// Assign library images to materials whose texture is missing.
+// ---------- Automatic texture -> material matching ----------
+// Remember which file name every loader asked for, so a missing texture can be matched by name later.
+for (const L of [THREE.TextureLoader, THREE.DataTextureLoader]) {
+  const orig = L.prototype.load;
+  L.prototype.load = function (url, ...rest) {
+    const t = orig.call(this, url, ...rest);
+    try { if (t && !String(url).startsWith('blob:')) t.userData.srcName = baseName(String(url)); } catch {}
+    return t;
+  };
+}
+const TYPE_MAP = [
+  ['normal', /^(normal|normals|nrm|nor|norm|nml|nm|normalgl|normaldx|bump|bmp)$/],
+  ['rough', /^(roughness|rough|rgh|gloss|glossiness|smoothness)$/],
+  ['metal', /^(metallic|metalness|metal|met)$/],
+  ['ao', /^(ao|occlusion|ambientocclusion|occ)$/],
+  ['height', /^(height|disp|displacement|depth|parallax)$/],
+  ['emissive', /^(emissive|emission|emit|glow|illum)$/],
+  ['spec', /^(specular|spec|reflection|refl)$/],
+  ['opacity', /^(opacity|alpha|mask|transparency|cutout)$/],
+  ['packed', /^(orm|arm|rma|mra|mrao|ormh|maskmap)$/],
+];
+const COLOR_STRICT = /^(basecolor|basecolour|albedo|diffuse|diff|dif|color|colour|col|bc|alb|basemap)$/;
+const COLOR_ANY = /^(basecolor|basecolour|albedo|diffuse|diff|dif|color|colour|col|bc|alb|basemap|base|d|c)$/;
+const NOISE = /^(tex|texture|textures|t|tx|mat|material|materials|m|map|maps|png|jpg|jpeg|tga|\d+k|lambert\d*|phong\d*|blinn\d*|standard|surface|shader|default|defaultmaterial|mesh|geo|lod\d*|sg|shd|mtl|low|high|lowpoly|highpoly|baked|bake)$/;
+const typeWord = t => TYPE_MAP.some(([, re]) => re.test(t));
+const splitTokens = s => String(s).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+function imgInfo(item) {
+  const toks = splitTokens(item.name.replace(/\.[^.]+$/, ''));
+  const j = toks.join('');
+  let type = 'none';
+  if (toks.some(t => COLOR_STRICT.test(t)) || /^(d|c)$/.test(toks.at(-1) || '')) type = 'color';
+  else {
+    for (const [k, re] of TYPE_MAP) if (toks.some(t => re.test(t))) { type = k; break; }
+    if (type === 'none') {
+      if (/basecolou?r|albedo|diffuse/.test(j)) type = 'color';
+      else if (/normal/.test(j)) type = 'normal';
+      else if (/roughness|metallic|metalness|occlusion|height|displacement|emissi|specular|opacity/.test(j)) type = 'other';
+    }
+  }
+  const t2 = [...toks];
+  while (t2.length > 1 && (COLOR_ANY.test(t2.at(-1)) || typeWord(t2.at(-1)) || NOISE.test(t2.at(-1)))) t2.pop();
+  const core = toks.filter(t => !COLOR_ANY.test(t) && !typeWord(t) && !NOISE.test(t));
+  return { item, type, full: j, base: t2.join(''), core };
+}
+const coreOf = s => splitTokens(String(s).replace(/\.\d{3}$/, '')).filter(t => !NOISE.test(t) && !COLOR_ANY.test(t));
+
+function matKeys(mi) {
+  const m = mi.mat, src = [];
+  for (const t of [m.map, m.emissiveMap]) if (t && !texWorks(t) && t.userData.srcName) src.push(t.userData.srcName);
+  const keys = [{ core: coreOf(m.name || ''), w: 1 }];
+  const o = origMap(m);
+  if (o?.name) keys.push({ core: coreOf(baseName(o.name).replace(/\.[^.]+$/, '')), w: 0.95 });
+  for (const n of mi.meshNames) keys.push({ core: coreOf(n), w: 0.85 });
+  return {
+    raw: splitTokens(m.name || '').join(''),
+    src: src.map(s => { const st = splitTokens(s.replace(/\.[^.]+$/, '')); return { full: st.join(''), info: imgInfo({ name: s }) }; }),
+    keys: keys.filter(k => k.core.length),
+  };
+}
+function scorePair(mk, ii) {
+  for (const s of mk.src) {
+    if (s.full === ii.full) return 4;
+    if (s.info.base && s.info.base === ii.base && (ii.type === 'color' || ii.type === 'none')) return 3.5;
+  }
+  if (ii.type !== 'color' && ii.type !== 'none') return 0;
+  const bonus = ii.type === 'color' ? 0.05 : 0;
+  if (mk.raw && mk.raw === ii.base) return 3 + bonus;
+  let best = 0;
+  const jb = ii.core.join('');
+  for (const k of mk.keys) {
+    const a = new Set(k.core), b = new Set(ii.core);
+    if (!b.size) continue;
+    let inter = 0; a.forEach(t => b.has(t) && inter++);
+    let s = inter / Math.max(a.size, b.size);
+    const ja = k.core.join('');
+    if (ja.length >= 3 && jb.length >= 3 && (ja.includes(jb) || jb.includes(ja)))
+      s = Math.max(s, 0.6 + 0.4 * Math.min(ja.length, jb.length) / Math.max(ja.length, jb.length));
+    best = Math.max(best, s * k.w);
+  }
+  return best ? best + bonus : 0;
+}
+
+// Assign library images to materials whose own texture is missing. Returns number of materials set.
 function autoAssign(items) {
   if (!items.length || !matInfos.length) return 0;
-  let n = 0;
   const free = matInfos.filter(mi => !overrides.has(mi.mat) && !texWorks(origMap(mi.mat)));
+  if (!free.length) return 0;
+  const infos = items.map(imgInfo);
+  const pairs = [];
   for (const mi of free) {
-    const o = origMap(mi.mat);
-    const keys = [o?.name, mi.name].filter(Boolean).map(s => stem(String(s).split(/[\\/]/).pop()));
-    let hit = items.find(it => keys.includes(stem(it.name)));
-    if (!hit) hit = items.find(it => keys.some(k => k && (stem(it.name).includes(k) || k.includes(stem(it.name)))));
-    if (hit) { overrides.set(mi.mat, hit); n++; }
+    const mk = matKeys(mi);
+    for (const ii of infos) { const s = scorePair(mk, ii); if (s >= 0.5) pairs.push({ mi, ii, s }); }
   }
-  const stillFree = free.filter(mi => !overrides.has(mi.mat));
-  if (items.length === 1 && stillFree.length) { stillFree.forEach(mi => overrides.set(mi.mat, items[0])); n += stillFree.length; }
-  return n;
+  pairs.sort((a, b) => b.s - a.s);
+  const done = new Set(), used = new Set();
+  for (const pass of [0, 1]) {
+    for (const p of pairs) {
+      if (done.has(p.mi) || (pass === 0 && used.has(p.ii) && p.s < 3)) continue;
+      overrides.set(p.mi.mat, p.ii.item); autoSet.add(p.mi.mat); done.add(p.mi); used.add(p.ii);
+    }
+  }
+  // Fallbacks: one colour image left for the remaining material(s).
+  const left = free.filter(mi => !done.has(mi));
+  const colorImgs = infos.filter(ii => ii.type === 'color' || ii.type === 'none');
+  const unusedColor = colorImgs.filter(ii => !used.has(ii));
+  let pick = null;
+  if (colorImgs.length === 1) pick = colorImgs[0];
+  else if (left.length === 1 && unusedColor.length === 1) pick = unusedColor[0];
+  if (pick) for (const mi of left) { overrides.set(mi.mat, pick.item); autoSet.add(mi.mat); done.add(mi); }
+  return done.size;
 }
+const imgTypeLabel = item => { const t = imgInfo(item).type; return t === 'color' || t === 'none' ? '' : ` (${t})`; };
 
 // ---------- Geometry helpers ----------
 function withBary(g) {
@@ -542,7 +702,7 @@ function disposeModel() {
   }
   geos.forEach(g => g.dispose());
   basicCache.forEach(m => m.dispose()); basicCache.clear();
-  overrides.clear(); matFlip.clear();
+  overrides.clear(); matFlip.clear(); autoSet.clear(); hoverMat = null; flash = null;
   tex.forEach(t => t.dispose());
   records = []; matInfos = [];
   modelRoot.clear();
@@ -589,7 +749,8 @@ async function loadModel(files) {
     clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
       if (!ready || progress.loaded < progress.total) return;
-      autoAssign(items); applyShading(); renderMatList(); updateWarn();
+      const n = autoAssign(items); applyShading(); renderMatList(); updateWarn();
+      if (n) { toast(`Textures auto-assigned to ${n} of ${matInfos.length} material(s). Check the Textures panel.`); openPanel(); }
     }, 400);
   };
   manager.onLoad = settle;
@@ -640,9 +801,10 @@ async function loadModel(files) {
     o.geometry = g;
     records.push({ mesh: o, geo: g, mat: o.material, cache: {} });
     for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
-      if (!m || seenMat.has(m)) continue;
+      if (!m) continue;
+      if (seenMat.has(m)) { const mi = matInfos.find(x => x.mat === m); if (o.name) mi.meshNames.push(o.name); continue; }
       seenMat.add(m); matFlip.set(m, flipY);
-      matInfos.push({ mat: m, name: m.name || `Material ${matInfos.length + 1}`, hasUV: !!g.attributes.uv });
+      matInfos.push({ mat: m, name: m.name || `Material ${matInfos.length + 1}`, hasUV: !!g.attributes.uv, meshNames: o.name ? [o.name] : [] });
     }
   });
   modelName = main.name;
@@ -671,11 +833,12 @@ function updateWarn() {
 function renderMatList() {
   const box = $('matList');
   if (!matInfos.length) { box.innerHTML = '<div class="hint">Load a model to see its materials.</div>' + libraryHint(); return; }
-  const opts = it => `<option value="lib:${library.indexOf(it)}">${esc(it.name)}</option>`;
+  const opts = it => `<option value="lib:${library.indexOf(it)}">${esc(it.name)}${imgTypeLabel(it)}</option>`;
+  const sortedLib = [...library].sort((a, b) => (imgTypeLabel(a) ? 1 : 0) - (imgTypeLabel(b) ? 1 : 0));
   let html = '';
   if (matInfos.length > 1 && library.length) {
     html += `<div class="row"><span class="lbl" style="flex:none">All materials</span><select data-all>
-      <option value="">— set all —</option><option value="orig">From file</option><option value="none">None</option>${library.map(opts).join('')}</select></div>`;
+      <option value="">— set all —</option><option value="orig">From file</option><option value="none">None</option>${sortedLib.map(opts).join('')}</select></div>`;
   }
   matInfos.forEach((mi, idx) => {
     const ov = overrides.get(mi.mat), o = origMap(mi.mat);
@@ -684,13 +847,13 @@ function renderMatList() {
     let thumb = '';
     if (ov) thumb = ov.thumb;
     else if (!overrides.has(mi.mat) && texWorks(o)) thumb = imgToThumb(o);
-    const warn = !mi.hasUV ? ' <small>no UVs</small>' : '';
-    html += `<div class="mat"><div class="thumb" style="${thumb ? `background-image:url('${thumb}')` : ''}"></div>
+    const warn = (!mi.hasUV ? ' <small>no UVs</small>' : '') + (autoSet.has(mi.mat) && ov ? ' <em class="auto">auto</em>' : '');
+    html += `<div class="mat" data-idx="${idx}" title="Hover or click to highlight where this material is used"><div class="thumb" style="${thumb ? `background-image:url('${thumb}')` : ''}"></div>
       <div class="name" title="${esc(mi.name)}">${esc(mi.name)}${warn}</div>
       <select data-mat="${idx}">
         <option value="orig" ${cur === 'orig' ? 'selected' : ''}>From file${origState}</option>
         <option value="none" ${cur === 'none' ? 'selected' : ''}>None (base color)</option>
-        ${library.map(it => opts(it).replace('">', `" ${cur === 'lib:' + library.indexOf(it) ? 'selected' : ''}>`)).join('')}
+        ${sortedLib.map(it => opts(it).replace('">', `" ${cur === 'lib:' + library.indexOf(it) ? 'selected' : ''}>`)).join('')}
       </select></div>`;
   });
   box.innerHTML = html + libraryHint();
@@ -710,16 +873,24 @@ function imgToThumb(t) {
   thumbCache.set(t, url);
   return url;
 }
+$('matList').addEventListener('pointerover', e => {
+  const row = e.target.closest('.mat'); hoverMat = row ? matInfos[+row.dataset.idx]?.mat ?? null : null;
+});
+$('matList').addEventListener('pointerleave', () => { hoverMat = null; });
+$('matList').addEventListener('click', e => {
+  const row = e.target.closest('.mat'); if (row && e.target.tagName !== 'SELECT') flashMat(matInfos[+row.dataset.idx].mat);
+});
 $('matList').addEventListener('change', e => {
   const sel = e.target;
   const val = sel.value;
   const apply = mi => {
+    autoSet.delete(mi.mat);
     if (val === 'orig') overrides.delete(mi.mat);
     else if (val === 'none') overrides.set(mi.mat, null);
     else overrides.set(mi.mat, library[+val.slice(4)]);
   };
   if (sel.dataset.all !== undefined) { if (!val) return; matInfos.forEach(apply); }
-  else apply(matInfos[+sel.dataset.mat]);
+  else { apply(matInfos[+sel.dataset.mat]); flashMat(matInfos[+sel.dataset.mat].mat); }
   if (state.mode !== 'texture') state.mode = 'texture';
   applyShading(); renderMatList(); updateWarn(); syncUI();
 });
@@ -957,6 +1128,8 @@ renderer.setAnimationLoop(() => {
     renderer.render(scene, cam);
     scene.overrideMaterial = null; scene.background = BG; helpers.visible = hv;
   }
+  const h = highlightNow(performance.now());
+  if (h.mat) renderHighlight(h.mat, h.s);
   $('projBtn').textContent = cam === ortho ? 'Ortho' : 'Persp';
   $('projBtn').classList.toggle('on', cam === ortho);
   $('viewName').textContent = viewLabel();
