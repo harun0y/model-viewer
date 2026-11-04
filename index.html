@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model Görüntüleyici</title>
+<style>
+  :root {
+    --bg: #1d1d1d; --panel: #2b2b2b; --btn: #3d3d3d; --btn-h: #4b4b4b;
+    --active: #4772b3; --active-h: #5683c4; --text: #e6e6e6; --muted: #9b9b9b; --line: #161616;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line); user-select: none; }
+  .brand { font-weight: 600; margin-right: 4px; white-space: nowrap; }
+  .group { display: inline-flex; align-items: center; }
+  .group > .lbl { color: var(--muted); margin-right: 6px; font-size: 12px; }
+  button { font: inherit; color: var(--text); background: var(--btn); border: 1px solid var(--line);
+    padding: 4px 9px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: var(--btn-h); }
+  button.on { background: var(--active); }
+  button.on:hover { background: var(--active-h); }
+  .group > button { border-radius: 0; margin-left: -1px; }
+  .group > button:first-of-type { border-radius: 4px 0 0 4px; margin-left: 0; }
+  .group > button:last-of-type { border-radius: 0 4px 4px 0; }
+  .group > button:only-of-type { border-radius: 4px; }
+  button.primary { background: var(--active); border-radius: 4px; font-weight: 600; }
+  button.primary:hover { background: var(--active-h); }
+  .angle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+  .angle input { width: 90px; accent-color: var(--active); }
+  .angle span { min-width: 32px; color: var(--text); }
+  .hidden { display: none !important; }
+
+  #view { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  #view > canvas.main { display: block; width: 100%; height: 100%; outline: none; }
+  #gizmo { position: absolute; top: 8px; right: 8px; width: 120px; height: 120px; cursor: pointer; touch-action: none; }
+  #viewName { position: absolute; top: 10px; left: 12px; color: #ddd; font-size: 12px; pointer-events: none;
+    text-shadow: 0 1px 2px #000; }
+  #info { position: absolute; left: 12px; bottom: 10px; color: #cfcfcf; font-size: 12px; pointer-events: none;
+    text-shadow: 0 1px 2px #000; max-width: calc(100% - 24px); }
+  #info .warn { color: #ffb347; pointer-events: auto; }
+  #help { position: absolute; right: 12px; bottom: 10px; color: var(--muted); font-size: 11.5px; text-align: right;
+    pointer-events: none; text-shadow: 0 1px 2px #000; line-height: 1.5; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #empty div { text-align: center; color: #bbb; border: 2px dashed #5a5a5a; border-radius: 12px; padding: 28px 36px;
+    background: rgba(0,0,0,.18); max-width: calc(100% - 32px); }
+  #empty b { display: block; font-size: 16px; color: #eee; margin-bottom: 6px; }
+  #drop { position: absolute; inset: 0; background: rgba(71,114,179,.28); border: 3px dashed #7fa6e0;
+    display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; pointer-events: none; }
+  #busy { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.35); font-size: 15px; }
+  #toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: #5a2a2a; color: #fff;
+    padding: 8px 14px; border-radius: 6px; max-width: calc(100% - 32px); box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+  @media (max-width: 700px) { #help { display: none; } #gizmo { width: 96px; height: 96px; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <span class="brand">Model Görüntüleyici</span>
+  <button class="primary" id="openBtn" title="GLB, GLTF, FBX, OBJ (+MTL), DAE, STL, PLY. Dokuları da birlikte seçebilirsin.">Dosya Aç</button>
+  <input type="file" id="fileInput" multiple hidden>
+
+  <div class="group">
+    <span class="lbl">Görünüm</span>
+    <button data-mode="texture" class="on" title="Sadece doku (ışıksız, emission gibi)">Doku</button>
+    <button data-mode="solid" title="Gri, ışıklı mesh">Solid</button>
+  </div>
+
+  <div class="group" id="normalGroup">
+    <span class="lbl">Gölgeleme</span>
+    <button data-normals="file" class="on" title="Dosyadaki normaller: Blender'daki Shade Auto Smooth / Mark Sharp sonucu aynen görünür">Dosyadaki</button>
+    <button data-normals="flat" title="Shade Flat">Flat</button>
+    <button data-normals="smooth" title="Shade Smooth (her şey yumuşak)">Smooth</button>
+    <button data-normals="auto" title="Açıya göre otomatik smooth">Auto Smooth</button>
+  </div>
+  <label class="angle hidden" id="angleBox">Açı <input type="range" id="angle" min="0" max="180" value="30"><span id="angleVal">30°</span></label>
+
+  <div class="group">
+    <span class="lbl">Wireframe</span>
+    <button id="wireBtn" title="Wireframe'i üstüne çiz (W)">Üstüne</button>
+    <button id="wireOnlyBtn" title="Sadece wireframe (Shift+W)">Sadece</button>
+  </div>
+
+  <div class="group">
+    <span class="lbl">Bakış</span>
+    <button data-view="front" title="Ön (1)">Ön</button>
+    <button data-view="back" title="Arka (Ctrl+1)">Arka</button>
+    <button data-view="right" title="Sağ (3)">Sağ</button>
+    <button data-view="left" title="Sol (Ctrl+3)">Sol</button>
+    <button data-view="top" title="Üst (7)">Üst</button>
+    <button data-view="bottom" title="Alt (Ctrl+7)">Alt</button>
+  </div>
+
+  <div class="group">
+    <button id="projBtn" title="Perspektif / Ortografik (5)">Perspektif</button>
+    <button id="frameBtn" title="Modeli ortala (F)">Ortala</button>
+    <button id="gridBtn" class="on" title="Zemin ızgarası">Izgara</button>
+    <button id="zupBtn" title="Model yatık geldiyse: Z-up dosyayı Y-up'a çevir">Z-up düzelt</button>
+  </div>
+</header>
+
+<main id="view">
+  <canvas id="gizmo"></canvas>
+  <div id="viewName">Perspektif</div>
+  <div id="empty"><div><b>Modeli buraya sürükle-bırak</b>ya da üstteki <u>Dosya Aç</u> butonunu kullan.<br>
+    GLB · GLTF · FBX · OBJ (+MTL) · DAE · STL · PLY<br>
+    <small>Dokular ayrı dosyaysa onları da (veya klasörü) birlikte bırak.</small></div></div>
+  <div id="info"></div>
+  <div id="help">Sol tık / orta tık: döndür · Sağ tık veya Shift+sürükle: kaydır · Tekerlek: yakınlaş<br>
+    1 / 3 / 7: Ön / Sağ / Üst · 9: ters taraf · 2 4 6 8: 15° döndür · 5: Persp/Ortho · F: ortala · W: wireframe</div>
+  <div id="drop" class="hidden">Bırak, yükleyeyim</div>
+  <div id="busy" class="hidden">Yükleniyor…</div>
+  <div id="toast" class="hidden"></div>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+import { TGALoader } from 'three/addons/loaders/TGALoader.js';
+
+const LIBS = 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/';
+const $ = id => document.getElementById(id);
+const viewEl = $('view');
+
+// ---------- Renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.autoClear = false;
+renderer.domElement.classList.add('main');
+viewEl.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x3a3a3a);
+scene.background = BG;
+const helpers = new THREE.Group();
+const modelRoot = new THREE.Group();
+scene.add(helpers, modelRoot);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x4a4a4a, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 2.3);
+scene.add(sun, sun.target);
+
+const persp = new THREE.PerspectiveCamera(40, 1, 0.01, 1000);
+const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000);
+let cam = persp;
+const tanHalf = () => Math.tan(THREE.MathUtils.degToRad(persp.fov / 2));
+const aspect = () => viewEl.clientWidth / Math.max(1, viewEl.clientHeight);
+
+const controls = new OrbitControls(persp, renderer.domElement);
+controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+controls.enableDamping = false;
+controls.zoomSpeed = 1.2;
+
+const draco = new DRACOLoader().setDecoderPath(LIBS + 'draco/gltf/');
+const ktx2 = new KTX2Loader().setTranscoderPath(LIBS + 'basis/').detectSupport(renderer);
+
+// ---------- State ----------
+const state = { mode: 'texture', normals: 'file', angle: 30, wire: false, wireOnly: false, grid: true, zup: false };
+let records = [];          // { mesh, geo, mat, cache }
+let blobUrls = [];
+let modelRadius = 1;
+
+const polyOff = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
+const solidMat = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.75, metalness: 0, side: THREE.DoubleSide, ...polyOff });
+const solidFlatMat = solidMat.clone(); solidFlatMat.flatShading = true;
+const wireMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.6,
+  depthWrite: false, depthFunc: THREE.LessEqualDepth });
+const wireOnlyMat = new THREE.MeshBasicMaterial({ color: 0xdedede, wireframe: true, transparent: true, opacity: 0.85,
+  depthWrite: false, depthTest: false });
+const basicCache = new Map();
+
+function toBasic(m) {
+  if (!m) m = solidMat;
+  if (basicCache.has(m)) return basicCache.get(m);
+  const map = m.map || m.emissiveMap || null;
+  const b = new THREE.MeshBasicMaterial({
+    map, color: map ? 0xffffff : (m.color ? m.color.clone() : 0xcccccc),
+    transparent: !!m.transparent, opacity: m.opacity ?? 1, alphaTest: m.alphaTest || 0,
+    vertexColors: !!m.vertexColors, side: THREE.DoubleSide, ...polyOff
+  });
+  basicCache.set(m, b);
+  return b;
+}
+
+// Normals with a crease angle (angle=180° -> fully smooth). Works on positions only, so UV seams don't break smoothing.
+function creasedGeometry(src, angleRad) {
+  const g = src.index ? src.toNonIndexed() : src.clone();
+  const pos = g.attributes.position, n = pos.count, tris = Math.floor(n / 3);
+  g.computeBoundingBox();
+  const diag = g.boundingBox.getSize(new THREE.Vector3()).length() || 1;
+  const q = 1 / (diag * 1e-6);
+  const fw = new Float32Array(tris * 3), fu = new Float32Array(tris * 3);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let t = 0; t < tris; t++) {
+    a.fromBufferAttribute(pos, t * 3); b.fromBufferAttribute(pos, t * 3 + 1); c.fromBufferAttribute(pos, t * 3 + 2);
+    c.sub(b); a.sub(b); c.cross(a);
+    fw[t * 3] = c.x; fw[t * 3 + 1] = c.y; fw[t * 3 + 2] = c.z;
+    const l = c.length() || 1;
+    fu[t * 3] = c.x / l; fu[t * 3 + 1] = c.y / l; fu[t * 3 + 2] = c.z / l;
+  }
+  const keys = new Array(n), map = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = Math.round(pos.getX(i) * q) + '_' + Math.round(pos.getY(i) * q) + '_' + Math.round(pos.getZ(i) * q);
+    keys[i] = k;
+    let arr = map.get(k); if (!arr) map.set(k, arr = []);
+    arr.push((i / 3) | 0);
+  }
+  const cosA = Math.cos(angleRad) - 1e-6, out = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const t = (i / 3) | 0, tx = fu[t * 3], ty = fu[t * 3 + 1], tz = fu[t * 3 + 2];
+    let sx = 0, sy = 0, sz = 0;
+    for (const f of map.get(keys[i])) {
+      if (tx * fu[f * 3] + ty * fu[f * 3 + 1] + tz * fu[f * 3 + 2] >= cosA) { sx += fw[f * 3]; sy += fw[f * 3 + 1]; sz += fw[f * 3 + 2]; }
+    }
+    let l = Math.hypot(sx, sy, sz);
+    if (!l) { sx = tx; sy = ty; sz = tz; l = 1; }
+    out[i * 3] = sx / l; out[i * 3 + 1] = sy / l; out[i * 3 + 2] = sz / l;
+  }
+  g.setAttribute('normal', new THREE.BufferAttribute(out, 3));
+  if (g.morphAttributes.normal) delete g.morphAttributes.normal;
+  return g;
+}
+
+function geoFor(r) {
+  if (state.mode !== 'solid') return r.geo;
+  if (state.normals === 'smooth') return r.cache.smooth ??= creasedGeometry(r.geo, Math.PI);
+  if (state.normals === 'auto') {
+    if (r.cache.autoAngle !== state.angle) {
+      r.cache.auto?.dispose();
+      r.cache.auto = creasedGeometry(r.geo, THREE.MathUtils.degToRad(state.angle));
+      r.cache.autoAngle = state.angle;
+    }
+    return r.cache.auto;
+  }
+  return r.geo;
+}
+
+function applyShading() {
+  for (const r of records) {
+    r.mesh.geometry = geoFor(r);
+    if (state.mode === 'texture') r.mesh.material = Array.isArray(r.mat) ? r.mat.map(toBasic) : toBasic(r.mat);
+    else r.mesh.material = state.normals === 'flat' ? solidFlatMat : solidMat;
+  }
+}
+
+// ---------- Grid ----------
+function buildGrid(radius) {
+  helpers.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+  helpers.clear();
+  const unit = Math.pow(10, Math.floor(Math.log10(radius || 1)));
+  const size = unit * 40;
+  const grid = new THREE.GridHelper(size, 40, 0x4e4e4e, 0x4e4e4e);
+  const h = size / 2;
+  const ax = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-h, 0, 0), new THREE.Vector3(h, 0, 0), new THREE.Vector3(0, 0, -h), new THREE.Vector3(0, 0, h)]);
+  ax.setAttribute('color', new THREE.Float32BufferAttribute([.85,.25,.3, .85,.25,.3, .45,.7,.1, .45,.7,.1], 3));
+  const axes = new THREE.LineSegments(ax, new THREE.LineBasicMaterial({ vertexColors: true, depthFunc: THREE.LessEqualDepth }));
+  axes.renderOrder = 1;
+  helpers.add(grid, axes);
+  helpers.visible = state.grid;
+}
+buildGrid(1);
+
+// ---------- Camera helpers ----------
+function setOrthoFrustum(h) {
+  const a = aspect();
+  ortho.top = h; ortho.bottom = -h; ortho.left = -h * a; ortho.right = h * a;
+  ortho.updateProjectionMatrix();
+}
+function useOrtho() {
+  if (cam === ortho) return;
+  const dist = persp.position.distanceTo(controls.target);
+  ortho.zoom = 1; setOrthoFrustum(dist * tanHalf());
+  ortho.position.copy(persp.position); ortho.quaternion.copy(persp.quaternion);
+  cam = ortho; controls.object = ortho; controls.update();
+}
+function usePersp() {
+  if (cam === persp) return;
+  const dist = (ortho.top / ortho.zoom) / tanHalf();
+  const dir = ortho.position.clone().sub(controls.target).normalize();
+  persp.position.copy(controls.target).addScaledVector(dir, dist);
+  persp.quaternion.copy(ortho.quaternion);
+  cam = persp; controls.object = persp; controls.update();
+}
+
+let anim = null, autoOrtho = false, snappedDir = null;
+const VIEWS = {
+  front: new THREE.Vector3(0, 0, 1), back: new THREE.Vector3(0, 0, -1),
+  right: new THREE.Vector3(1, 0, 0), left: new THREE.Vector3(-1, 0, 0),
+  top: new THREE.Vector3(0, 1, 0), bottom: new THREE.Vector3(0, -1, 0),
+};
+const VIEW_NAMES = { front: 'Ön', back: 'Arka', right: 'Sağ', left: 'Sol', top: 'Üst', bottom: 'Alt' };
+
+function snapTo(dirIn) {
+  const d = dirIn.clone().normalize();
+  if (Math.abs(d.y) > 0.9999) d.set(0, Math.sign(d.y), Math.sign(d.y) * 1e-4).normalize();
+  const from = cam.position.clone().sub(controls.target);
+  const dist = from.length();
+  anim = { from: from.normalize(), to: d, dist, t0: performance.now(), dur: 230 };
+}
+function currentDir() { return cam.position.clone().sub(controls.target).normalize(); }
+
+function orbitBy(dTheta, dPhi) {
+  const off = cam.position.clone().sub(controls.target);
+  const s = new THREE.Spherical().setFromVector3(off);
+  s.theta += dTheta;
+  s.phi = THREE.MathUtils.clamp(s.phi + dPhi, 1e-4, Math.PI - 1e-4);
+  off.setFromSpherical(s);
+  cam.position.copy(controls.target).add(off);
+  cam.lookAt(controls.target);
+  controls.update();
+}
+
+function frame(resetDir = false) {
+  modelRoot.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(modelRoot);
+  if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const r = sphere.radius || 1;
+  modelRadius = r;
+  let dir = resetDir ? new THREE.Vector3(0.55, 0.45, 1).normalize() : currentDir();
+  if (!isFinite(dir.x) || dir.lengthSq() < 0.5) dir = new THREE.Vector3(0.55, 0.45, 1).normalize();
+  const dist = r / Math.sin(THREE.MathUtils.degToRad(persp.fov / 2)) * 1.05;
+  controls.target.copy(sphere.center);
+  persp.near = Math.max(r * 0.005, 1e-4); persp.far = r * 400 + dist;
+  persp.updateProjectionMatrix();
+  ortho.near = -r * 400; ortho.far = r * 400;
+  cam.position.copy(sphere.center).addScaledVector(dir, dist);
+  if (cam === ortho) { ortho.zoom = 1; setOrthoFrustum(dist * tanHalf()); }
+  cam.lookAt(controls.target);
+  controls.update();
+}
+
+// ---------- Loading ----------
+const EXT_ORDER = ['glb', 'gltf', 'fbx', 'obj', 'dae', 'ply', 'stl'];
+const extOf = name => name.split('.').pop().toLowerCase();
+const baseName = url => { const s = url.split('?')[0].split(/[\\/]/).pop(); try { return decodeURIComponent(s); } catch { return s; } };
+
+function disposeModel() {
+  const tex = new Set();
+  const killMat = m => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) tex.add(v); m.dispose(); };
+  for (const r of records) {
+    r.geo.dispose(); r.cache.smooth?.dispose(); r.cache.auto?.dispose();
+    (Array.isArray(r.mat) ? r.mat : [r.mat]).forEach(killMat);
+  }
+  basicCache.forEach(m => m.dispose()); basicCache.clear();
+  tex.forEach(t => t.dispose());
+  records = [];
+  modelRoot.clear();
+  blobUrls.forEach(u => URL.revokeObjectURL(u)); blobUrls = [];
+}
+
+async function loadFiles(list) {
+  const files = [...list];
+  if (!files.length) return;
+  let main = null;
+  for (const e of EXT_ORDER) { main = files.find(f => extOf(f.name) === e); if (main) break; }
+  if (!main) { toast('Desteklenen model dosyası yok. (GLB, GLTF, FBX, OBJ, DAE, STL, PLY)'); return; }
+
+  $('busy').classList.remove('hidden');
+  disposeModel();
+  const urls = new Map();
+  for (const f of files) { const u = URL.createObjectURL(f); blobUrls.push(u); urls.set(f.name.toLowerCase(), u); }
+  const missing = new Set();
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier(url => url.startsWith('data:') ? url : (urls.get(baseName(url).toLowerCase()) ?? url));
+  manager.onError = url => { if (!url.startsWith('blob:') && !url.startsWith('data:')) missing.add(baseName(url)); };
+  manager.addHandler(/\.tga$/i, new TGALoader(manager));
+  manager.onLoad = () => showInfo(main.name, missing);
+
+  const ext = extOf(main.name);
+  let root, zup = false;
+  try {
+    if (ext === 'glb' || ext === 'gltf') {
+      const l = new GLTFLoader(manager).setDRACOLoader(draco).setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+      const g = await l.loadAsync(main.name);
+      root = g.scene || g.scenes[0];
+    } else if (ext === 'fbx') {
+      root = await new FBXLoader(manager).loadAsync(main.name);
+    } else if (ext === 'obj') {
+      const l = new OBJLoader(manager);
+      const mtl = files.find(f => extOf(f.name) === 'mtl');
+      if (mtl) { const mats = await new MTLLoader(manager).loadAsync(mtl.name); mats.preload(); l.setMaterials(mats); }
+      root = await l.loadAsync(main.name);
+    } else if (ext === 'dae') {
+      root = (await new ColladaLoader(manager).loadAsync(main.name)).scene;
+    } else if (ext === 'stl' || ext === 'ply') {
+      const geo = await (ext === 'stl' ? new STLLoader(manager) : new PLYLoader(manager)).loadAsync(main.name);
+      if (!geo.attributes.normal) geo.computeVertexNormals();
+      root = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xcccccc, vertexColors: !!geo.attributes.color }));
+      zup = true; // Blender's STL/PLY export is Z-up by default
+    }
+  } catch (err) {
+    console.error(err);
+    $('busy').classList.add('hidden');
+    toast('Yüklenemedi: ' + (err?.message || err));
+    return;
+  }
+
+  modelRoot.add(root);
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
+    records.push({ mesh: o, geo: o.geometry, mat: o.material, cache: {} });
+  });
+  setZup(zup, false);
+  applyShading();
+  frame(true);
+  buildGrid(modelRadius);
+  if (cam === ortho && autoOrtho) { usePersp(); autoOrtho = false; frame(true); }
+  $('empty').classList.add('hidden');
+  $('busy').classList.add('hidden');
+  showInfo(main.name, missing);
+}
+
+function showInfo(name, missing) {
+  let tris = 0, verts = 0;
+  for (const r of records) {
+    const g = r.geo;
+    verts += g.attributes.position.count;
+    tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  }
+  const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  let html = `<b>${esc(name)}</b> · Mesh: ${records.length} · Üçgen: ${Math.round(tris).toLocaleString('tr')} · Vertex: ${verts.toLocaleString('tr')}`;
+  if (missing && missing.size) html += `<br><span class="warn">Bulunamayan dosyalar: ${esc([...missing].join(', '))} — bunları modelle birlikte sürükle.</span>`;
+  $('info').innerHTML = html;
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 6000);
+}
+
+function setZup(on, reframe = true) {
+  state.zup = on;
+  modelRoot.rotation.x = on ? -Math.PI / 2 : 0;
+  $('zupBtn').classList.toggle('on', on);
+  if (reframe && records.length) { frame(); buildGrid(modelRadius); }
+}
+
+// ---------- File input / drag & drop ----------
+$('openBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { loadFiles(e.target.files); e.target.value = ''; };
+
+async function filesFromDrop(dt) {
+  const entries = [...(dt.items || [])].map(i => i.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  async function walk(en) {
+    if (en.isFile) out.push(await new Promise((res, rej) => en.file(res, rej)));
+    else if (en.isDirectory) {
+      const reader = en.createReader();
+      let batch;
+      do { batch = await new Promise((res, rej) => reader.readEntries(res, rej)); for (const e of batch) await walk(e); } while (batch.length);
+    }
+  }
+  for (const e of entries) await walk(e);
+  return out;
+}
+let dragDepth = 0;
+window.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; $('drop').classList.remove('hidden'); });
+window.addEventListener('dragleave', e => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; $('drop').classList.add('hidden'); } });
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', async e => {
+  e.preventDefault(); dragDepth = 0; $('drop').classList.add('hidden');
+  loadFiles(await filesFromDrop(e.dataTransfer));
+});
+
+// ---------- UI ----------
+function syncUI() {
+  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === state.mode));
+  document.querySelectorAll('[data-normals]').forEach(b => b.classList.toggle('on', b.dataset.normals === state.normals));
+  $('normalGroup').style.opacity = state.mode === 'solid' ? 1 : 0.45;
+  $('angleBox').classList.toggle('hidden', !(state.mode === 'solid' && state.normals === 'auto'));
+  $('wireBtn').classList.toggle('on', state.wire);
+  $('wireOnlyBtn').classList.toggle('on', state.wireOnly);
+  $('gridBtn').classList.toggle('on', state.grid);
+}
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { state.mode = b.dataset.mode; applyShading(); syncUI(); });
+document.querySelectorAll('[data-normals]').forEach(b => b.onclick = () => {
+  state.normals = b.dataset.normals; state.mode = 'solid'; applyShading(); syncUI();
+});
+let angleTimer;
+$('angle').oninput = e => {
+  state.angle = +e.target.value; $('angleVal').textContent = state.angle + '°';
+  clearTimeout(angleTimer); angleTimer = setTimeout(applyShading, 80);
+};
+const toggleWire = () => { state.wire = !state.wire; if (state.wire) state.wireOnly = false; syncUI(); };
+const toggleWireOnly = () => { state.wireOnly = !state.wireOnly; if (state.wireOnly) state.wire = false; syncUI(); };
+$('wireBtn').onclick = toggleWire;
+$('wireOnlyBtn').onclick = toggleWireOnly;
+$('gridBtn').onclick = () => { state.grid = !state.grid; helpers.visible = state.grid; syncUI(); };
+$('zupBtn').onclick = () => setZup(!state.zup);
+$('frameBtn').onclick = () => frame();
+const toggleProj = () => { autoOrtho = false; cam === persp ? useOrtho() : usePersp(); };
+$('projBtn').onclick = toggleProj;
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => snapTo(VIEWS[b.dataset.view]));
+syncUI();
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  const k = e.code.replace('Numpad', 'Digit');
+  const step = Math.PI / 12;
+  let handled = true;
+  switch (k) {
+    case 'Digit1': snapTo(e.ctrlKey ? VIEWS.back : VIEWS.front); break;
+    case 'Digit3': snapTo(e.ctrlKey ? VIEWS.left : VIEWS.right); break;
+    case 'Digit7': snapTo(e.ctrlKey ? VIEWS.bottom : VIEWS.top); break;
+    case 'Digit9': snapTo(currentDir().negate()); break;
+    case 'Digit5': toggleProj(); break;
+    case 'Digit4': orbitBy(-step, 0); break;
+    case 'Digit6': orbitBy(step, 0); break;
+    case 'Digit8': orbitBy(0, -step); break;
+    case 'Digit2': orbitBy(0, step); break;
+    case 'KeyF': case 'Home': case 'DigitDecimal': case 'Period': frame(); break;
+    case 'KeyW': e.shiftKey ? toggleWireOnly() : toggleWire(); break;
+    default: handled = false;
+  }
+  if (handled) e.preventDefault();
+});
+
+// ---------- Navigation gizmo (Blender style, Z-up labels) ----------
+const gz = $('gizmo'), gctx = gz.getContext('2d');
+const AXES = [
+  { l: 'X', d: new THREE.Vector3(1, 0, 0), c: '#ff3653', n: '#93313f' },
+  { l: 'Y', d: new THREE.Vector3(0, 0, -1), c: '#8adb00', n: '#557d17' },
+  { l: 'Z', d: new THREE.Vector3(0, 1, 0), c: '#2c8fff', n: '#2c5a92' },
+];
+let gzItems = [], gzHover = false, gzHoverItem = null, gzDrag = null;
+function drawGizmo() {
+  const S = gz.clientWidth, dpr = devicePixelRatio;
+  if (gz.width !== Math.round(S * dpr)) { gz.width = gz.height = Math.round(S * dpr); }
+  gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gctx.clearRect(0, 0, S, S);
+  const c = S / 2, br = S * 0.085, r = c - br - 3;
+  if (gzHover || gzDrag) { gctx.fillStyle = 'rgba(255,255,255,.1)'; gctx.beginPath(); gctx.arc(c, c, c - 1, 0, Math.PI * 2); gctx.fill(); }
+  const qi = cam.quaternion.clone().invert();
+  const items = [];
+  for (const a of AXES) for (const s of [1, -1]) {
+    const v = a.d.clone().multiplyScalar(s).applyQuaternion(qi);
+    items.push({ x: c + v.x * r, y: c - v.y * r, z: v.z, a, s, dir: a.d.clone().multiplyScalar(s) });
+  }
+  items.sort((p, q) => p.z - q.z);
+  gctx.textAlign = 'center'; gctx.textBaseline = 'middle';
+  gctx.font = `bold ${Math.round(S * 0.1)}px system-ui, sans-serif`;
+  for (const it of items) {
+    const hov = gzHoverItem === it.a.l + it.s;
+    if (it.s > 0) {
+      gctx.strokeStyle = it.a.c; gctx.lineWidth = 2;
+      gctx.beginPath(); gctx.moveTo(c, c); gctx.lineTo(it.x, it.y); gctx.stroke();
+    }
+    gctx.beginPath(); gctx.arc(it.x, it.y, br, 0, Math.PI * 2);
+    gctx.fillStyle = it.s > 0 ? it.a.c : it.a.n; gctx.fill();
+    if (it.s < 0) { gctx.strokeStyle = it.a.c; gctx.lineWidth = 1.5; gctx.stroke(); }
+    if (hov) { gctx.strokeStyle = '#fff'; gctx.lineWidth = 2; gctx.stroke(); }
+    if (it.s > 0 || hov) {
+      gctx.fillStyle = it.s > 0 ? '#151515' : '#fff';
+      gctx.fillText(it.s > 0 ? it.a.l : '-' + it.a.l, it.x, it.y + 0.5);
+    }
+  }
+  gzItems = items;
+  gzItems.br = br;
+}
+function gzPick(e) {
+  const rect = gz.getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top;
+  for (let i = gzItems.length - 1; i >= 0; i--) {
+    const it = gzItems[i];
+    if (Math.hypot(it.x - x, it.y - y) <= gzItems.br + 2) return it;
+  }
+  return null;
+}
+gz.addEventListener('pointerdown', e => { gz.setPointerCapture(e.pointerId); gzDrag = { x: e.clientX, y: e.clientY, moved: false }; });
+gz.addEventListener('pointermove', e => {
+  gzHover = true;
+  if (gzDrag) {
+    const dx = e.clientX - gzDrag.x, dy = e.clientY - gzDrag.y;
+    if (gzDrag.moved || Math.hypot(dx, dy) > 3) {
+      gzDrag.moved = true; anim = null;
+      orbitBy(-dx * 0.012, -dy * 0.012);
+      gzDrag.x = e.clientX; gzDrag.y = e.clientY;
+    }
+  } else {
+    const it = gzPick(e); gzHoverItem = it ? it.a.l + it.s : null;
+  }
+});
+gz.addEventListener('pointerup', e => {
+  if (gzDrag && !gzDrag.moved) { const it = gzPick(e); if (it) snapTo(it.dir); }
+  gzDrag = null;
+});
+gz.addEventListener('pointerleave', () => { gzHover = false; gzHoverItem = null; });
+
+// ---------- Resize / render loop ----------
+function resize() {
+  const w = viewEl.clientWidth, h = viewEl.clientHeight;
+  renderer.setSize(w, h);
+  persp.aspect = w / Math.max(1, h); persp.updateProjectionMatrix();
+  setOrthoFrustum(ortho.top);
+}
+new ResizeObserver(resize).observe(viewEl);
+resize();
+frame(true);
+
+function viewLabel() {
+  const proj = cam === ortho ? 'Ortografik' : 'Perspektif';
+  const d = currentDir();
+  for (const [k, v] of Object.entries(VIEWS)) if (d.angleTo(v) < 0.01) return `${VIEW_NAMES[k]} · ${proj}`;
+  return proj;
+}
+
+const tmpQ = new THREE.Quaternion(), tmpQ2 = new THREE.Quaternion();
+renderer.setAnimationLoop(() => {
+  if (anim) {
+    const t = Math.min(1, (performance.now() - anim.t0) / anim.dur);
+    const e = 1 - Math.pow(1 - t, 3);
+    tmpQ.setFromUnitVectors(anim.from, anim.to);
+    tmpQ2.identity().slerp(tmpQ, e);
+    const dir = anim.from.clone().applyQuaternion(tmpQ2);
+    cam.position.copy(controls.target).addScaledVector(dir, anim.dist);
+    cam.lookAt(controls.target);
+    if (t === 1) {
+      cam.position.copy(controls.target).addScaledVector(anim.to, anim.dist);
+      cam.lookAt(controls.target);
+      snappedDir = anim.to.clone(); anim = null;
+      if (cam === persp) { useOrtho(); autoOrtho = true; }   // Blender "Auto Perspective"
+      controls.update();
+    }
+  } else if (autoOrtho && cam === ortho && snappedDir && currentDir().angleTo(snappedDir) > 0.02) {
+    usePersp(); autoOrtho = false;
+  }
+
+  const dist = cam.position.distanceTo(controls.target);
+  sun.position.copy(cam.localToWorld(new THREE.Vector3(-dist * 0.35, dist * 0.55, 0)));
+  sun.target.position.copy(controls.target);
+
+  renderer.clear();
+  if (state.wireOnly) {
+    modelRoot.visible = false; renderer.render(scene, cam); modelRoot.visible = true;
+  } else renderer.render(scene, cam);
+
+  if (state.wire || state.wireOnly) {
+    const hv = helpers.visible;
+    helpers.visible = false; scene.background = null;
+    scene.overrideMaterial = state.wireOnly ? wireOnlyMat : wireMat;
+    renderer.render(scene, cam);
+    scene.overrideMaterial = null; scene.background = BG; helpers.visible = hv;
+  }
+  $('projBtn').textContent = cam === ortho ? 'Ortografik' : 'Perspektif';
+  $('projBtn').classList.toggle('on', cam === ortho);
+  $('viewName').textContent = viewLabel();
+  drawGizmo();
+});
+</script>
+</body>
+</html>
