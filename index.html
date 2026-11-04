@@ -74,6 +74,23 @@
   .mat:hover { outline: 1px solid #ffa31a; }
   select { font: inherit; font-size: 12px; color: var(--text); background: var(--btn); border: 1px solid var(--line);
     border-radius: 4px; padding: 3px 4px; width: 100%; min-width: 0; }
+  .mat > .pick { grid-column: 2; }
+  .mat.picking { outline: 1px solid var(--active); }
+  button.pick { width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; font-size: 12px; padding: 3px 7px; }
+  #picker { position: absolute; top: 0; bottom: 0; width: 230px; z-index: 5; background: #252525; border-right: 1px solid var(--line);
+    box-shadow: 6px 0 18px rgba(0,0,0,.45); display: flex; flex-direction: column; }
+  #picker .phead { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; font-size: 12px; }
+  #picker .phead span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pickerList { flex: 1; overflow-y: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .pitem { background: var(--panel2); border: 2px solid transparent; border-radius: 5px; padding: 5px; cursor: pointer; flex: none; }
+  .pitem.hov, .pitem:hover { border-color: #ffa31a; }
+  .pitem.cur { border-color: var(--active); }
+  .pimg { aspect-ratio: 1; background: repeating-conic-gradient(#262626 0 25%, #1a1a1a 0 50%) 0 0/16px 16px;
+    border-radius: 3px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .pimg img { width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: auto; }
+  .pimg span { color: var(--muted); font-size: 12px; }
+  .pname { font-size: 11.5px; margin-top: 4px; word-break: break-all; }
+  .pname small { color: #ffb347; }
   .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; }
   .keys kbd { font: 11px ui-monospace, monospace; background: var(--btn); border: 1px solid var(--line); border-radius: 3px;
     padding: 1px 5px; white-space: nowrap; justify-self: start; }
@@ -205,6 +222,11 @@
     </details>
   </aside>
 
+  <div id="picker" class="hidden">
+    <div class="phead"><span>Texture for <b id="pickerTitle"></b></span><button class="icon" id="pickerClose" title="Close (Esc)">✕</button></div>
+    <div class="hint" style="padding:0 10px 8px">Hover an image to preview it on the model (you can orbit the view meanwhile). Click to keep · Esc / ✕ to cancel.</div>
+    <div id="pickerList"></div>
+  </div>
   <main id="view">
     <canvas id="gizmo"></canvas>
     <div id="viewName">Perspective</div>
@@ -382,7 +404,7 @@ async function addToLibrary(files) {
       t.colorSpace = THREE.SRGBColorSpace;
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.flipY = true;
-      const item = { name: f.name, url, thumb: extOf(f.name) === 'tga' ? '' : url, tex: { true: t } };
+      const item = { name: f.name, url, thumb: extOf(f.name) === 'tga' ? imgToThumb(t) : url, tex: { true: t } };
       library.push(item); added.push(item);
     } catch { URL.revokeObjectURL(url); }
   }
@@ -702,6 +724,7 @@ function disposeModel() {
   }
   geos.forEach(g => g.dispose());
   basicCache.forEach(m => m.dispose()); basicCache.clear();
+  if (picker) { picker = null; $('picker').classList.add('hidden'); }
   overrides.clear(); matFlip.clear(); autoSet.clear(); hoverMat = null; flash = null;
   tex.forEach(t => t.dispose());
   records = []; matInfos = [];
@@ -830,31 +853,32 @@ function updateWarn() {
     ? `Missing textures: ${esc([...missing].join(', '))} — drop those images onto the viewport, or pick textures in the side panel.` : '';
 }
 
+function choiceOf(m) { return overrides.has(m) ? (overrides.get(m) ? 'lib:' + library.indexOf(overrides.get(m)) : 'none') : 'orig'; }
+function choiceLabel(m) {
+  const c = choiceOf(m), o = origMap(m);
+  if (c === 'none') return 'None (base color)';
+  if (c === 'orig') return 'From file' + (o ? (texWorks(o) ? '' : ' (missing)') : ' (none)');
+  return overrides.get(m).name;
+}
+function choiceThumb(m) {
+  const ov = overrides.get(m), o = origMap(m);
+  if (ov) return ov.thumb;
+  if (!overrides.has(m) && texWorks(o)) return imgToThumb(o);
+  return '';
+}
+const sortedLibrary = () => [...library].sort((a, b) => (imgTypeLabel(a) ? 1 : 0) - (imgTypeLabel(b) ? 1 : 0));
+
 function renderMatList() {
   const box = $('matList');
   if (!matInfos.length) { box.innerHTML = '<div class="hint">Load a model to see its materials.</div>' + libraryHint(); return; }
-  const opts = it => `<option value="lib:${library.indexOf(it)}">${esc(it.name)}${imgTypeLabel(it)}</option>`;
-  const sortedLib = [...library].sort((a, b) => (imgTypeLabel(a) ? 1 : 0) - (imgTypeLabel(b) ? 1 : 0));
   let html = '';
-  if (matInfos.length > 1 && library.length) {
-    html += `<div class="row"><span class="lbl" style="flex:none">All materials</span><select data-all>
-      <option value="">— set all —</option><option value="orig">From file</option><option value="none">None</option>${sortedLib.map(opts).join('')}</select></div>`;
-  }
+  if (matInfos.length > 1 && library.length) html += `<button class="pick" data-pick="all">Set all materials… ▸</button>`;
   matInfos.forEach((mi, idx) => {
-    const ov = overrides.get(mi.mat), o = origMap(mi.mat);
-    const cur = overrides.has(mi.mat) ? (ov ? 'lib:' + library.indexOf(ov) : 'none') : 'orig';
-    const origState = o ? (texWorks(o) ? '' : ' (missing)') : ' (none)';
-    let thumb = '';
-    if (ov) thumb = ov.thumb;
-    else if (!overrides.has(mi.mat) && texWorks(o)) thumb = imgToThumb(o);
-    const warn = (!mi.hasUV ? ' <small>no UVs</small>' : '') + (autoSet.has(mi.mat) && ov ? ' <em class="auto">auto</em>' : '');
-    html += `<div class="mat" data-idx="${idx}" title="Hover or click to highlight where this material is used"><div class="thumb" style="${thumb ? `background-image:url('${thumb}')` : ''}"></div>
+    const thumb = choiceThumb(mi.mat);
+    const warn = (!mi.hasUV ? ' <small>no UVs</small>' : '') + (autoSet.has(mi.mat) && overrides.get(mi.mat) ? ' <em class="auto">auto</em>' : '');
+    html += `<div class="mat${picker && picker.idx === idx ? ' picking' : ''}" data-idx="${idx}" title="Hover or click to highlight where this material is used"><div class="thumb" style="${thumb ? `background-image:url('${thumb}')` : ''}"></div>
       <div class="name" title="${esc(mi.name)}">${esc(mi.name)}${warn}</div>
-      <select data-mat="${idx}">
-        <option value="orig" ${cur === 'orig' ? 'selected' : ''}>From file${origState}</option>
-        <option value="none" ${cur === 'none' ? 'selected' : ''}>None (base color)</option>
-        ${sortedLib.map(it => opts(it).replace('">', `" ${cur === 'lib:' + library.indexOf(it) ? 'selected' : ''}>`)).join('')}
-      </select></div>`;
+      <button class="pick" data-pick="${idx}" title="Choose texture — hover images to preview">${esc(choiceLabel(mi.mat))} ▸</button></div>`;
   });
   box.innerHTML = html + libraryHint();
 }
@@ -862,37 +886,101 @@ function libraryHint() {
   return library.length ? `<div class="hint">Loaded images: ${library.map(i => esc(i.name)).join(', ')}</div>` : '';
 }
 const thumbCache = new WeakMap();
-function imgToThumb(t) {
+function imgToThumb(t, size = 256) {
   if (thumbCache.has(t)) return thumbCache.get(t);
   let url = '';
   try {
-    const img = t.image, c = document.createElement('canvas'); c.width = c.height = 64;
+    const img = t.image, c = document.createElement('canvas');
+    const w = img.width, h = img.height, k = Math.min(1, size / Math.max(w, h));
+    c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
     const ctx = c.getContext('2d');
-    if (img.data) { url = ''; } else { ctx.drawImage(img, 0, 0, 64, 64); url = c.toDataURL(); }
+    if (img.data) {
+      const src = document.createElement('canvas'); src.width = w; src.height = h;
+      const id = new ImageData(new Uint8ClampedArray(img.data.buffer, img.data.byteOffset, w * h * 4), w, h);
+      src.getContext('2d').putImageData(id, 0, 0);
+      if (t.flipY) { ctx.translate(0, c.height); ctx.scale(1, -1); }
+      ctx.drawImage(src, 0, 0, c.width, c.height);
+    } else ctx.drawImage(img, 0, 0, c.width, c.height);
+    url = c.toDataURL();
   } catch { url = ''; }
   thumbCache.set(t, url);
   return url;
 }
+
+// ---------- Texture picker flyout (hover = live preview, click = keep) ----------
+let picker = null;   // { idx: number | 'all', targets: [mi], saved: Map(mat -> {v} | undefined) }
+function setChoice(mi, val) {
+  if (val === 'orig') overrides.delete(mi.mat);
+  else if (val === 'none') overrides.set(mi.mat, null);
+  else overrides.set(mi.mat, library[+val.slice(4)]);
+}
+const snapshot = targets => new Map(targets.map(mi => [mi.mat, overrides.has(mi.mat) ? { v: overrides.get(mi.mat) } : undefined]));
+function openPicker(idx) {
+  if (picker) closePicker(false);
+  const targets = idx === 'all' ? matInfos : [matInfos[idx]];
+  picker = { idx, targets, saved: snapshot(targets) };
+  hoverMat = null;
+  if (state.mode !== 'texture') { state.mode = 'texture'; applyShading(); syncUI(); }
+  if (idx !== 'all') flashMat(targets[0].mat);
+  const cur = idx === 'all' ? null : choiceOf(targets[0].mat);
+  const o = idx === 'all' ? null : origMap(targets[0].mat);
+  const origThumb = o && texWorks(o) ? imgToThumb(o) : '';
+  const item = (val, name, thumb, note = '') => `<div class="pitem${val === cur ? ' cur' : ''}" data-val="${val}">
+      <div class="pimg">${thumb ? `<img src="${thumb}" alt="">` : `<span>${val === 'none' ? 'no texture' : 'no image'}</span>`}</div>
+      <div class="pname">${esc(name)}${note ? ` <small>${note}</small>` : ''}</div></div>`;
+  let html = item('orig', 'From file', origThumb, o ? (texWorks(o) ? '' : 'missing') : (idx === 'all' ? '' : 'none')) + item('none', 'None (base color)', '');
+  for (const it of sortedLibrary()) html += item('lib:' + library.indexOf(it), it.name, it.thumb, imgTypeLabel(it).replace(/[()\s]/g, ''));
+  $('pickerTitle').textContent = idx === 'all' ? 'all materials' : targets[0].name;
+  $('pickerList').innerHTML = html;
+  $('picker').classList.remove('hidden');
+  $('picker').style.left = (panel.classList.contains('closed') ? 0 : panel.offsetWidth) + 'px';
+  $('pickerList').scrollTop = 0;
+  renderMatList();
+}
+function revertPreview() {
+  for (const mi of picker.targets) { const sv = picker.saved.get(mi.mat); sv ? overrides.set(mi.mat, sv.v) : overrides.delete(mi.mat); }
+  applyShading();
+}
+function closePicker(keep) {
+  if (!picker) return;
+  if (!keep) revertPreview();
+  picker = null;
+  $('picker').classList.add('hidden');
+  applyShading(); renderMatList(); updateWarn();
+}
+$('pickerList').addEventListener('pointerover', e => {
+  const it = e.target.closest('.pitem'); if (!it || !picker) return;
+  picker.targets.forEach(mi => setChoice(mi, it.dataset.val));
+  applyShading();
+  $('pickerList').querySelectorAll('.pitem').forEach(x => x.classList.toggle('hov', x === it));
+});
+$('pickerList').addEventListener('click', e => {
+  const it = e.target.closest('.pitem'); if (!it || !picker) return;
+  const targets = picker.targets;
+  targets.forEach(mi => { setChoice(mi, it.dataset.val); autoSet.delete(mi.mat); });
+  picker.saved = snapshot(targets);
+  closePicker(true);
+  if (targets.length === 1) flashMat(targets[0].mat);
+});
+$('pickerClose').onclick = () => closePicker(false);
+document.addEventListener('pointerdown', e => {
+  // clicks in the viewport keep the picker open so you can orbit around the preview
+  if (picker && e.target.closest('#panel, header') && !e.target.closest('.pick')) closePicker(false);
+});
+
 $('matList').addEventListener('pointerover', e => {
+  if (picker) return;
   const row = e.target.closest('.mat'); hoverMat = row ? matInfos[+row.dataset.idx]?.mat ?? null : null;
 });
 $('matList').addEventListener('pointerleave', () => { hoverMat = null; });
 $('matList').addEventListener('click', e => {
-  const row = e.target.closest('.mat'); if (row && e.target.tagName !== 'SELECT') flashMat(matInfos[+row.dataset.idx].mat);
-});
-$('matList').addEventListener('change', e => {
-  const sel = e.target;
-  const val = sel.value;
-  const apply = mi => {
-    autoSet.delete(mi.mat);
-    if (val === 'orig') overrides.delete(mi.mat);
-    else if (val === 'none') overrides.set(mi.mat, null);
-    else overrides.set(mi.mat, library[+val.slice(4)]);
-  };
-  if (sel.dataset.all !== undefined) { if (!val) return; matInfos.forEach(apply); }
-  else { apply(matInfos[+sel.dataset.mat]); flashMat(matInfos[+sel.dataset.mat].mat); }
-  if (state.mode !== 'texture') state.mode = 'texture';
-  applyShading(); renderMatList(); updateWarn(); syncUI();
+  const b = e.target.closest('.pick');
+  if (b) {
+    const idx = b.dataset.pick === 'all' ? 'all' : +b.dataset.pick;
+    if (picker && picker.idx === idx) closePicker(false); else openPicker(idx);
+    return;
+  }
+  const row = e.target.closest('.mat'); if (row) flashMat(matInfos[+row.dataset.idx].mat);
 });
 
 let toastTimer;
@@ -943,7 +1031,7 @@ const panel = $('panel');
 const isNarrow = () => matchMedia('(max-width: 760px)').matches;
 if (isNarrow()) panel.classList.add('closed');
 function openPanel() { panel.classList.remove('closed'); $('panelBtn').classList.add('on'); }
-function togglePanel() { panel.classList.toggle('closed'); $('panelBtn').classList.toggle('on', !panel.classList.contains('closed')); }
+function togglePanel() { if (picker) closePicker(false); panel.classList.toggle('closed'); $('panelBtn').classList.toggle('on', !panel.classList.contains('closed')); }
 $('panelBtn').onclick = togglePanel;
 $('panelBtn').classList.toggle('on', !panel.classList.contains('closed'));
 new ResizeObserver(() => resize()).observe(panel);
@@ -977,6 +1065,7 @@ document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => snapTo(V
 syncUI(); renderMatList();
 
 window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && picker) { closePicker(false); return; }
   if ((e.target.tagName === 'INPUT' && e.target.type !== 'range' && e.target.type !== 'checkbox') || e.target.tagName === 'SELECT') return;
   const k = e.code.replace('Numpad', 'Digit');
   const step = Math.PI / 12;
