@@ -95,6 +95,26 @@
   .keys kbd { font: 11px ui-monospace, monospace; background: var(--btn); border: 1px solid var(--line); border-radius: 3px;
     padding: 1px 5px; white-space: nowrap; justify-self: start; }
 
+  #outliner { width: 250px; flex: none; background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; user-select: none; }
+  #outliner.closed { display: none; }
+  #tree { display: flex; flex-direction: column; max-height: 52vh; overflow-y: auto; margin: 0 -6px; }
+  .node, .anim { display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 3px; cursor: pointer;
+    font-size: 12px; white-space: nowrap; min-height: 22px; }
+  .node:hover, .anim:hover { background: #3a3a3a; }
+  .node.sel, .node.sel:hover { background: #4b5a73; }
+  .node.off .nname, .node.off .ico { opacity: .4; }
+  .node .tw { width: 12px; flex: none; color: var(--muted); text-align: center; }
+  .node .ico { width: 14px; flex: none; text-align: center; font-size: 10px; }
+  .node .ico.mesh { color: #f0a050; } .node .ico.grp { color: #9b9b9b; }
+  .nname { flex: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .node .eye { background: none; border: none; padding: 0 2px; opacity: .8; display: flex; flex: none; }
+  .node .eye:hover { opacity: 1; background: none; }
+  .node .eye svg { width: 16px; height: 16px; }
+  .anim small { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .anim .aplay { width: 16px; flex: none; text-align: center; font-size: 10px; color: var(--muted); }
+  .anim.cur, .anim.cur:hover { background: var(--active); }
+  .anim.cur .aplay, .anim.cur small { color: #fff; }
+  #animList { display: flex; flex-direction: column; max-height: 30vh; overflow-y: auto; margin: 0 -6px; }
   #view { position: relative; flex: 1; min-width: 0; overflow: hidden; }
   #view > canvas.main { display: block; width: 100%; height: 100%; outline: none; }
   #gizmo { position: absolute; top: 8px; right: 8px; width: 120px; height: 120px; cursor: pointer; touch-action: none; }
@@ -117,6 +137,7 @@
   @media (max-width: 760px) {
     aside { position: absolute; z-index: 4; top: 0; bottom: 0; left: 0; box-shadow: 4px 0 16px rgba(0,0,0,.5); }
     #gizmo { width: 96px; height: 96px; }
+    #outliner { position: absolute; z-index: 4; top: 0; bottom: 0; right: 0; box-shadow: -4px 0 16px rgba(0,0,0,.5); }
     #fileLabel { order: 10; flex-basis: 100%; }
   }
 </style>
@@ -146,6 +167,7 @@
     <button id="projBtn" title="Perspective / Orthographic (5)">Persp</button>
     <button id="frameBtn" title="Frame model (F)">Frame</button>
   </div>
+  <button class="icon" id="outBtn" title="Toggle outliner &amp; animations (O)">▤</button>
   <input type="file" id="fileInput" multiple hidden>
   <input type="file" id="texInput" multiple hidden accept="image/*,.tga">
 </header>
@@ -217,7 +239,13 @@
         <kbd>5</kbd><span>Persp / Ortho</span>
         <kbd>F</kbd><span>Frame model</span>
         <kbd>W / Shift+W</kbd><span>Wire overlay / only</span>
-        <kbd>N</kbd><span>Toggle panel</span>
+        <kbd>N</kbd><span>Toggle this panel</span>
+        <kbd>O</kbd><span>Toggle outliner</span>
+        <kbd>Click</kbd><span>Select object</span>
+        <kbd>H / Alt+H</kbd><span>Hide selected / show all</span>
+        <kbd>G</kbd><span>Move gizmo on / off</span>
+        <kbd>Numpad .</kbd><span>Frame selected</span>
+        <kbd>Space</kbd><span>Play / pause animation</span>
       </div>
     </details>
   </aside>
@@ -238,11 +266,43 @@
     <div id="busy" class="hidden">Loading…</div>
     <div id="toast" class="hidden"></div>
   </main>
+  <aside id="outliner">
+    <details open>
+      <summary>Outliner</summary>
+      <div class="sec">
+        <div class="row">
+          <button id="moveBtn" title="Show a move gizmo on the selected object (G)">✥ Move</button>
+          <button id="resetPosBtn" title="Put the selected object (or everything, if nothing is selected) back where it was">Reset</button>
+          <span class="spacer"></span>
+          <button id="showAllBtn" title="Unhide everything (Alt+H)">Show all</button>
+        </div>
+        <div id="tree"></div>
+        <div class="hint">Click a row or the object in the viewport to select it · double-click a row to frame it · eye = hide / show.</div>
+      </div>
+    </details>
+    <details open>
+      <summary>Animations</summary>
+      <div class="sec">
+        <div id="animList"></div>
+        <div id="animCtl" class="sec hidden" style="padding:0">
+          <div class="row">
+            <button id="playBtn">▶ Play</button>
+            <button id="stopBtn" title="Stop and go back to the rest pose">■ Stop</button>
+            <span class="spacer"></span>
+            <label class="check"><input type="checkbox" id="loopChk" checked> Loop</label>
+          </div>
+          <div class="slider"><span class="lbl">Time</span><input type="range" id="animTime" min="0" max="1" step="0.001" value="0"><span id="animTimeVal">0.00</span></div>
+          <div class="slider"><span class="lbl">Speed</span><input type="range" id="animSpeed" min="0.1" max="2" step="0.05" value="1"><span id="animSpeedVal">1×</span></div>
+        </div>
+      </div>
+    </details>
+  </aside>
 </div>
 
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
@@ -298,6 +358,10 @@ let blobUrls = [];
 let modelRadius = 1;
 let modelName = '';
 let missing = new Set();
+let modelObj = null;       // loaded root object
+let selected = null, hoverObj = null;
+let mixer = null, clips = [], curAction = null;
+const clock = new THREE.Clock();
 
 const polyOff = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
 const solidMat = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.75, metalness: 0, side: THREE.DoubleSide, ...polyOff });
@@ -367,17 +431,28 @@ function highlightNow(now) {
   if (hoverMat && (!mat || mat === hoverMat)) { mat = hoverMat; s = Math.max(s, 0.6 + 0.25 * Math.sin(now * 0.006)); }
   return { mat, s };
 }
+function shown(o) { for (let p = o; p; p = p.parent) { if (!p.visible) return false; if (p === modelRoot) return true; } return true; }
+const underCache = new Map();
+function recsUnder(o) {
+  let set = underCache.get(o);
+  if (!set) { set = new Set(); o.traverse(c => { if (c.isMesh) set.add(c); }); underCache.set(o, set); }
+  return records.filter(r => set.has(r.mesh) && shown(r.mesh));
+}
 function renderHighlight(mat, s) {
-  const set = records.filter(r => Array.isArray(r.mat) ? r.mat.includes(mat) : r.mat === mat);
+  renderOutline(records.filter(r => (Array.isArray(r.mat) ? r.mat.includes(mat) : r.mat === mat) && shown(r.mesh)), HL_COLOR, s, true);
+}
+function renderOutline(set, color, s, glow) {
   if (!set.length || s <= 0.01) return;
+  if (!glow && state.wire === 'only') return;
   const hidden = [], swapped = [];
   for (const r of records) if (!set.includes(r) && r.mesh.visible) { r.mesh.visible = false; hidden.push(r); }
   for (const r of set) { swapped.push([r, r.mesh.geometry]); r.mesh.geometry = r.cache.smooth ??= creasedGeometry(r.geo, Math.PI); }
   const hv = helpers.visible; helpers.visible = false; scene.background = null;
   hl.strength.value = s;
+  outlineMat.color.setHex(color);
   renderer.getDrawingBufferSize(hl.res.value).divideScalar(renderer.getPixelRatio());
   if (state.wire !== 'only') { scene.overrideMaterial = outlineMat; renderer.render(scene, cam); }
-  scene.overrideMaterial = glowMat; renderer.render(scene, cam);
+  if (glow) { scene.overrideMaterial = glowMat; renderer.render(scene, cam); }
   scene.overrideMaterial = null; scene.background = BG; helpers.visible = hv;
   for (const r of hidden) r.mesh.visible = true;
   for (const [r, g] of swapped) r.mesh.geometry = g;
@@ -689,20 +764,22 @@ function orbitBy(dTheta, dPhi) {
   controls.update();
 }
 
-function frame(resetDir = false) {
+function frame(resetDir = false, target = modelRoot) {
   modelRoot.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(modelRoot);
+  const box = new THREE.Box3().setFromObject(target);
   if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const r = sphere.radius || 1;
-  modelRadius = r;
+  if (target === modelRoot) modelRadius = r;
+  const far = Math.max(r, modelRadius);
   let dir = resetDir ? new THREE.Vector3(0.55, 0.45, 1).normalize() : currentDir();
   if (!isFinite(dir.x) || dir.lengthSq() < 0.5) dir = new THREE.Vector3(0.55, 0.45, 1).normalize();
-  const dist = r / Math.sin(THREE.MathUtils.degToRad(persp.fov / 2)) * 1.05;
+  const half = Math.min(Math.atan(tanHalf()), Math.atan(tanHalf() * aspect()));   // fit width too in narrow views
+  const dist = r / Math.sin(half) * 1.05;
   controls.target.copy(sphere.center);
-  persp.near = Math.max(r * 0.005, 1e-4); persp.far = r * 400 + dist;
+  persp.near = Math.max(r * 0.005, 1e-4); persp.far = far * 400 + dist;
   persp.updateProjectionMatrix();
-  ortho.near = -r * 400; ortho.far = r * 400;
+  ortho.near = -far * 400; ortho.far = far * 400;
   cam.position.copy(sphere.center).addScaledVector(dir, dist);
   if (cam === ortho) { ortho.zoom = 1; setOrthoFrustum(dist * tanHalf()); }
   cam.lookAt(controls.target);
@@ -728,6 +805,9 @@ function disposeModel() {
   overrides.clear(); matFlip.clear(); autoSet.clear(); hoverMat = null; flash = null;
   tex.forEach(t => t.dispose());
   records = []; matInfos = [];
+  tc.detach(); selected = hoverObj = null; underCache.clear();
+  if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(modelObj); }
+  mixer = null; clips = []; curAction = null; modelObj = null;
   modelRoot.clear();
   blobUrls.forEach(u => URL.revokeObjectURL(u)); blobUrls = [];
 }
@@ -779,12 +859,12 @@ async function loadModel(files) {
   manager.onLoad = settle;
 
   const ext = extOf(main.name);
-  let root, zup = false;
+  let root, zup = false, anims = null;
   try {
     if (ext === 'glb' || ext === 'gltf') {
       const l = new GLTFLoader(manager).setDRACOLoader(draco).setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
       const g = await l.loadAsync(main.name);
-      root = g.scene || g.scenes[0];
+      root = g.scene || g.scenes[0]; anims = g.animations;
     } else if (ext === 'fbx') {
       root = await new FBXLoader(manager).loadAsync(main.name);
     } else if (ext === 'obj') {
@@ -793,7 +873,7 @@ async function loadModel(files) {
       if (mtl) { const mats = await new MTLLoader(manager).loadAsync(mtl.name); mats.preload(); l.setMaterials(mats); }
       root = await l.loadAsync(main.name);
     } else if (ext === 'dae') {
-      root = (await new ColladaLoader(manager).loadAsync(main.name)).scene;
+      const c = await new ColladaLoader(manager).loadAsync(main.name); root = c.scene; anims = c.animations;
     } else if (ext === 'stl' || ext === 'ply') {
       const geo = await (ext === 'stl' ? new STLLoader(manager) : new PLYLoader(manager)).loadAsync(main.name);
       if (!geo.attributes.normal) geo.computeVertexNormals();
@@ -811,6 +891,8 @@ async function loadModel(files) {
 
   const flipY = !(ext === 'glb' || ext === 'gltf');
   modelRoot.add(root);
+  modelObj = root;
+  root.traverse(o => { o.userData.rest = { p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() }; });
   let tris = 0, verts = 0;
   const prepped = new Map(), seenMat = new Set();
   root.traverse(o => {
@@ -842,6 +924,11 @@ async function loadModel(files) {
   $('busy').classList.add('hidden');
   ready = true;
   renderMatList(); updateWarn();
+  setupAnims(root, anims || root.animations);
+  let nodes = 0; root.traverse(o => { if (hasMesh(o)) nodes++; });
+  if (nodes > 150) root.traverse(o => { if (o !== root && o.parent !== root && o.children.length) collapsed.add(o); });
+  renderTree();
+  if ((records.length > 1 || clips.length) && !isNarrow()) setOutliner(true);
   settle();
 }
 
@@ -1066,6 +1153,7 @@ syncUI(); renderMatList();
 
 window.addEventListener('keydown', e => {
   if (e.key === 'Escape' && picker) { closePicker(false); return; }
+  if (e.key === 'Escape' && selected) { select(null); return; }
   if ((e.target.tagName === 'INPUT' && e.target.type !== 'range' && e.target.type !== 'checkbox') || e.target.tagName === 'SELECT') return;
   const k = e.code.replace('Numpad', 'Digit');
   const step = Math.PI / 12;
@@ -1080,7 +1168,14 @@ window.addEventListener('keydown', e => {
     case 'Digit6': orbitBy(step, 0); break;
     case 'Digit8': orbitBy(0, -step); break;
     case 'Digit2': orbitBy(0, step); break;
-    case 'KeyF': case 'Home': case 'DigitDecimal': case 'Period': frame(); break;
+    case 'KeyF': case 'Home': frame(); break;
+    case 'DigitDecimal': case 'Period': frame(false, selected || modelRoot); break;
+    case 'KeyH':
+      if (e.altKey) showAll(); else if (selected) { selected.visible = false; afterVis(); }
+      break;
+    case 'KeyG': setMove(!moveMode); break;
+    case 'KeyO': setOutliner(outliner.classList.contains('closed')); break;
+    case 'Space': if (clips.length) togglePlay(); else handled = false; break;
     case 'KeyW': {
       const target = e.shiftKey ? 'only' : 'overlay';
       state.wire = state.wire === target ? 'off' : target; syncUI(); break;
@@ -1090,6 +1185,167 @@ window.addEventListener('keydown', e => {
   }
   if (handled) e.preventDefault();
 });
+
+// ---------- Outliner ----------
+const outliner = $('outliner');
+if (isNarrow()) outliner.classList.add('closed');
+function setOutliner(on) { outliner.classList.toggle('closed', !on); $('outBtn').classList.toggle('on', on); }
+$('outBtn').onclick = () => setOutliner(outliner.classList.contains('closed'));
+$('outBtn').classList.toggle('on', !outliner.classList.contains('closed'));
+new ResizeObserver(() => resize()).observe(outliner);
+
+const EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/><path d="M3 3l18 18"/></svg>';
+const collapsed = new WeakSet();
+let rowObjs = [];
+const hasMesh = o => o.isMesh || o.children.some(hasMesh);
+const nodeName = o => o.name || (o.isMesh ? 'Mesh' : o.type);
+function renderTree() {
+  const box = $('tree'); rowObjs = [];
+  if (!modelObj) { box.innerHTML = '<div class="hint" style="padding:0 6px">Load a model to see its objects.</div>'; syncOutlinerBtns(); return; }
+  let html = '';
+  const add = (o, d) => {
+    const kids = o.children.filter(hasMesh), open = !collapsed.has(o);
+    const i = rowObjs.push(o) - 1, nm = esc(nodeName(o));
+    html += `<div class="node${o === selected ? ' sel' : ''}${shown(o) ? '' : ' off'}" data-i="${i}" style="padding-left:${6 + d * 12}px">` +
+      `<span class="tw"${kids.length ? ' data-tw' : ''}>${kids.length ? (open ? '▾' : '▸') : ''}</span>` +
+      `<span class="ico ${o.isMesh ? 'mesh' : 'grp'}">${o.isMesh ? '▲' : '▣'}</span>` +
+      `<span class="nname" title="${nm}">${nm}</span>` +
+      `<button class="eye" data-eye="${i}" title="${o.visible ? 'Hide' : 'Show'} (H)">${o.visible ? EYE : EYE_OFF}</button></div>`;
+    if (open) kids.forEach(k => add(k, d + 1));
+  };
+  const top = modelObj.children.filter(hasMesh);
+  (modelObj.isMesh || !top.length ? [modelObj] : top).forEach(o => add(o, 0));
+  box.innerHTML = html;
+  syncOutlinerBtns();
+}
+function syncOutlinerBtns() {
+  $('moveBtn').classList.toggle('on', moveMode);
+  $('resetPosBtn').disabled = !modelObj;
+  $('resetPosBtn').textContent = selected ? 'Reset' : 'Reset all';
+}
+function select(o) {
+  selected = o;
+  if (o) for (let p = o.parent; p && p !== modelRoot; p = p.parent) collapsed.delete(p);
+  syncMove(); renderTree();
+  if (o) $('tree').querySelector('.node.sel')?.scrollIntoView({ block: 'nearest' });
+}
+function afterVis() { syncMove(); renderTree(); }
+function showAll() { modelObj?.traverse(o => { o.visible = true; }); afterVis(); }
+$('showAllBtn').onclick = showAll;
+$('tree').addEventListener('click', e => {
+  const eye = e.target.closest('[data-eye]');
+  if (eye) { const o = rowObjs[+eye.dataset.eye]; o.visible = !o.visible; afterVis(); return; }
+  const row = e.target.closest('.node'); if (!row) return;
+  const o = rowObjs[+row.dataset.i];
+  if (e.target.closest('[data-tw]')) { collapsed.has(o) ? collapsed.delete(o) : collapsed.add(o); renderTree(); return; }
+  select(o);
+});
+$('tree').addEventListener('dblclick', e => {
+  const row = e.target.closest('.node'); if (row && !e.target.closest('[data-eye],[data-tw]')) frame(false, rowObjs[+row.dataset.i]);
+});
+$('tree').addEventListener('pointerover', e => { const row = e.target.closest('.node'); hoverObj = row ? rowObjs[+row.dataset.i] : null; });
+$('tree').addEventListener('pointerleave', () => { hoverObj = null; });
+
+// ---------- Move gizmo ----------
+const tc = new TransformControls(cam, renderer.domElement);
+tc.setSpace('world');
+const tcScene = new THREE.Scene();
+tcScene.add(tc.getHelper());
+let moveMode = false, tcUsed = false;
+tc.addEventListener('dragging-changed', e => { controls.enabled = !e.value; if (e.value) tcUsed = true; });
+function syncMove() {
+  if (moveMode && selected && shown(selected)) { if (tc.object !== selected) tc.attach(selected); }
+  else if (tc.object) tc.detach();
+  syncOutlinerBtns();
+}
+function setMove(on) {
+  moveMode = on;
+  if (on && !selected) toast('Select an object first (click it in the viewport or in the Outliner).');
+  syncMove();
+}
+$('moveBtn').onclick = () => setMove(!moveMode);
+$('resetPosBtn').onclick = () => {
+  const reset = o => { const r = o.userData.rest; if (r) { o.position.copy(r.p); o.quaternion.copy(r.q); o.scale.copy(r.s); } };
+  if (selected) reset(selected); else modelObj?.traverse(reset);
+};
+
+// click-select in the viewport (a click, not a drag)
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let downPt = null;
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  downPt = { x: e.clientX, y: e.clientY };
+  tcUsed = tc.dragging || !!(tc.object && tc.axis);
+});
+renderer.domElement.addEventListener('pointerup', e => {
+  if (e.button !== 0 || !downPt) return;
+  const moved = Math.hypot(e.clientX - downPt.x, e.clientY - downPt.y) > 4;
+  downPt = null;
+  if (moved || tcUsed || !records.length) return;
+  const rc = renderer.domElement.getBoundingClientRect();
+  ndc.set((e.clientX - rc.left) / rc.width * 2 - 1, -(e.clientY - rc.top) / rc.height * 2 + 1);
+  ray.setFromCamera(ndc, cam);
+  const hit = ray.intersectObjects(records.map(r => r.mesh).filter(shown), false)[0];
+  select(hit ? hit.object : null);
+});
+
+// ---------- Animations ----------
+function setupAnims(root, list) {
+  clips = (list || []).filter(c => c && c.duration > 0);
+  mixer = clips.length ? new THREE.AnimationMixer(root) : null;
+  mixer?.addEventListener('finished', renderAnims);
+  curAction = null;
+  $('animSpeed').value = 1; $('animSpeedVal').textContent = '1×';
+  renderAnims();
+}
+const clipName = (c, i) => c.name || `Animation ${i + 1}`;
+function renderAnims() {
+  const box = $('animList');
+  if (!clips.length) {
+    box.innerHTML = `<div class="hint" style="padding:0 6px">${modelObj ? 'This model has no animations.' : 'Load a model to see its animations.'}</div>`;
+    $('animCtl').classList.add('hidden'); return;
+  }
+  const cur = curAction?.getClip(), playing = curAction && !curAction.paused && curAction.enabled;
+  box.innerHTML = clips.map((c, i) => `<div class="anim${c === cur ? ' cur' : ''}" data-a="${i}" title="Click to play / pause">` +
+    `<span class="aplay">${c === cur && playing ? '❚❚' : '▶'}</span><span class="nname">${esc(clipName(c, i))}</span><small>${c.duration.toFixed(2)}s</small></div>`).join('');
+  $('animCtl').classList.toggle('hidden', !curAction);
+  $('playBtn').textContent = playing ? '❚❚ Pause' : '▶ Play';
+}
+function applyLoop() {
+  if (!curAction) return;
+  const loop = $('loopChk').checked;
+  curAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+  curAction.clampWhenFinished = !loop;
+}
+function playClip(i) {
+  const c = clips[i];
+  if (curAction && curAction.getClip() === c) return togglePlay();
+  mixer.stopAllAction();
+  curAction = mixer.clipAction(c);
+  applyLoop(); curAction.reset().play();
+  $('animTime').max = c.duration;
+  renderAnims();
+}
+function togglePlay() {
+  if (!curAction) return playClip(0);
+  const d = curAction.getClip().duration;
+  if (!curAction.enabled || (curAction.paused && !$('loopChk').checked && curAction.time >= d - 1e-3)) { curAction.reset().play(); }
+  else curAction.paused = !curAction.paused;
+  renderAnims();
+}
+$('animList').addEventListener('click', e => { const row = e.target.closest('.anim'); if (row) playClip(+row.dataset.a); });
+$('playBtn').onclick = togglePlay;
+$('stopBtn').onclick = () => { mixer?.stopAllAction(); curAction = null; renderAnims(); };
+$('loopChk').onchange = applyLoop;
+$('animSpeed').oninput = e => { if (mixer) mixer.timeScale = +e.target.value; $('animSpeedVal').textContent = (+e.target.value).toFixed(2).replace(/\.?0+$/, '') + '×'; };
+$('animTime').oninput = e => {
+  if (!curAction) return;
+  if (!curAction.enabled) curAction.reset().play();
+  curAction.time = +e.target.value; curAction.paused = true; mixer.update(0);
+  renderAnims();
+};
+renderTree(); renderAnims();
 
 // ---------- Navigation gizmo (Blender style, Z-up labels) ----------
 const gz = $('gizmo'), gctx = gz.getContext('2d');
@@ -1182,6 +1438,13 @@ function viewLabel() {
 
 const tmpQ = new THREE.Quaternion(), tmpQ2 = new THREE.Quaternion();
 renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (mixer) mixer.update(dt);
+  if (curAction) {
+    const t = curAction.time;
+    if (document.activeElement !== $('animTime')) $('animTime').value = t;
+    $('animTimeVal').textContent = t.toFixed(2);
+  }
   if (anim) {
     const t = Math.min(1, (performance.now() - anim.t0) / anim.dur);
     const e = 1 - Math.pow(1 - t, 3);
@@ -1219,6 +1482,9 @@ renderer.setAnimationLoop(() => {
   }
   const h = highlightNow(performance.now());
   if (h.mat) renderHighlight(h.mat, h.s);
+  if (hoverObj && hoverObj !== selected) renderOutline(recsUnder(hoverObj), 0xffffff, 0.55, false);
+  if (selected) renderOutline(recsUnder(selected), HL_COLOR, 1, false);
+  if (tc.object) { tc.camera = cam; renderer.render(tcScene, cam); }
   $('projBtn').textContent = cam === ortho ? 'Ortho' : 'Persp';
   $('projBtn').classList.toggle('on', cam === ortho);
   $('viewName').textContent = viewLabel();
