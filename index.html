@@ -115,6 +115,10 @@
   .anim.cur, .anim.cur:hover { background: var(--active); }
   .anim.cur .aplay, .anim.cur small { color: #fff; }
   #animList { display: flex; flex-direction: column; max-height: 30vh; overflow-y: auto; margin: 0 -6px; }
+  #ttBox { position: absolute; right: 10px; bottom: 10px; z-index: 3; display: flex; align-items: center; gap: 8px;
+    background: rgba(32,32,32,.88); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: none; }
+  #ttBox input { width: 110px; accent-color: var(--active); }
+  #ttSpeedVal { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
   #view { position: relative; flex: 1; min-width: 0; overflow: hidden; }
   #view > canvas.main { display: block; width: 100%; height: 100%; outline: none; }
   #gizmo { position: absolute; top: 8px; right: 8px; width: 120px; height: 120px; cursor: pointer; touch-action: none; }
@@ -246,6 +250,7 @@
         <kbd>G</kbd><span>Move gizmo on / off</span>
         <kbd>Numpad .</kbd><span>Frame selected</span>
         <kbd>Space</kbd><span>Play / pause animation</span>
+        <kbd>T</kbd><span>Turntable on / off</span>
       </div>
     </details>
   </aside>
@@ -262,6 +267,11 @@
       GLB · GLTF · FBX · OBJ (+MTL) · DAE · STL · PLY<br>
       <small>Drop its texture images (or the whole folder) together with it.</small></div></div>
     <div id="warn"></div>
+    <div id="ttBox">
+      <button id="ttBtn" title="Spin the model 360° in front of the camera (T)">⟳ Turntable</button>
+      <input type="range" id="ttSpeed" min="0.1" max="3" step="0.1" value="1" title="Turntable speed — 1× = one full turn in 12 s">
+      <span id="ttSpeedVal">1×</span>
+    </div>
     <div id="drop" class="hidden">Drop to load</div>
     <div id="busy" class="hidden">Loading…</div>
     <div id="toast" class="hidden"></div>
@@ -320,7 +330,7 @@ const $ = id => document.getElementById(id);
 const viewEl = $('view');
 
 // ---------- Renderer / scene ----------
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.autoClear = false;
 renderer.domElement.classList.add('main');
@@ -331,7 +341,9 @@ const BG = new THREE.Color(0x3a3a3a);
 scene.background = BG;
 const helpers = new THREE.Group();
 const modelRoot = new THREE.Group();
-scene.add(helpers, modelRoot);
+const turn = new THREE.Group();      // turntable pivot
+turn.add(modelRoot);
+scene.add(helpers, turn);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x4a4a4a, 1.3));
 const sun = new THREE.DirectionalLight(0xffffff, 2.3);
 scene.add(sun, sun.target);
@@ -397,7 +409,12 @@ const HL_NORMAL = `
   #else
     vec3 hlN = normalMatrix * normal;
   #endif`;
-const outlineMat = new THREE.MeshBasicMaterial({ color: HL_COLOR, side: THREE.BackSide, transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth });
+const outlineMat = new THREE.MeshBasicMaterial({ color: HL_COLOR, side: THREE.DoubleSide, transparent: true, depthWrite: false, depthTest: false,
+  stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc,
+  stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.KeepStencilOp });
+// writes the object's silhouette into the stencil buffer, so the outline is drawn only around it (and through other meshes)
+const maskMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false, side: THREE.DoubleSide,
+  stencilWrite: true, stencilRef: 1, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp });
 outlineMat.onBeforeCompile = sh => {
   sh.uniforms.hlStrength = hl.strength; sh.uniforms.hlRes = hl.res;
   sh.vertexShader = 'uniform vec2 hlRes;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
@@ -443,7 +460,6 @@ function renderHighlight(mat, s) {
 }
 function renderOutline(set, color, s, glow) {
   if (!set.length || s <= 0.01) return;
-  if (!glow && state.wire === 'only') return;
   const hidden = [], swapped = [];
   for (const r of records) if (!set.includes(r) && r.mesh.visible) { r.mesh.visible = false; hidden.push(r); }
   for (const r of set) { swapped.push([r, r.mesh.geometry]); r.mesh.geometry = r.cache.smooth ??= creasedGeometry(r.geo, Math.PI); }
@@ -451,7 +467,9 @@ function renderOutline(set, color, s, glow) {
   hl.strength.value = s;
   outlineMat.color.setHex(color);
   renderer.getDrawingBufferSize(hl.res.value).divideScalar(renderer.getPixelRatio());
-  if (state.wire !== 'only') { scene.overrideMaterial = outlineMat; renderer.render(scene, cam); }
+  renderer.clearStencil();
+  scene.overrideMaterial = maskMat; renderer.render(scene, cam);
+  scene.overrideMaterial = outlineMat; renderer.render(scene, cam);
   if (glow) { scene.overrideMaterial = glowMat; renderer.render(scene, cam); }
   scene.overrideMaterial = null; scene.background = BG; helpers.visible = hv;
   for (const r of hidden) r.mesh.visible = true;
@@ -765,7 +783,7 @@ function orbitBy(dTheta, dPhi) {
 }
 
 function frame(resetDir = false, target = modelRoot) {
-  modelRoot.updateMatrixWorld(true);
+  turn.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(target);
   if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
   const sphere = box.getBoundingSphere(new THREE.Sphere());
@@ -808,6 +826,7 @@ function disposeModel() {
   tc.detach(); selected = hoverObj = null; underCache.clear();
   if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(modelObj); }
   mixer = null; clips = []; curAction = null; modelObj = null;
+  tt.on = false; tt.back = null; tt.angle = 0; tt.gain = 0; turn.position.set(0, 0, 0); turn.quaternion.identity(); $('ttBtn').classList.remove('on');
   modelRoot.clear();
   blobUrls.forEach(u => URL.revokeObjectURL(u)); blobUrls = [];
 }
@@ -1174,6 +1193,7 @@ window.addEventListener('keydown', e => {
       if (e.altKey) showAll(); else if (selected) { selected.visible = false; afterVis(); }
       break;
     case 'KeyG': setMove(!moveMode); break;
+    case 'KeyT': setTurntable(!tt.on); break;
     case 'KeyO': setOutliner(outliner.classList.contains('closed')); break;
     case 'Space': if (clips.length) togglePlay(); else handled = false; break;
     case 'KeyW': {
@@ -1254,9 +1274,43 @@ const tcScene = new THREE.Scene();
 tcScene.add(tc.getHelper());
 let moveMode = false, tcUsed = false;
 tc.addEventListener('dragging-changed', e => { controls.enabled = !e.value; if (e.value) tcUsed = true; });
+const proxy = new THREE.Object3D();      // gizmo handle at the centre of the selection
+scene.add(proxy);
+const lastProxy = new THREE.Vector3(), _v = new THREE.Vector3();
+function movers(o) {
+  // a skinned mesh follows its bones, not its own transform -> also move the armature's root bones
+  const out = [o];
+  o.traverse(c => {
+    if (!c.isSkinnedMesh || !c.skeleton) return;
+    for (const b of c.skeleton.bones) {
+      if (b.parent && b.parent.isBone) continue;
+      let inside = false; for (let p = b; p; p = p.parent) if (out.includes(p)) { inside = true; break; }
+      if (!inside) out.push(b);
+    }
+  });
+  return out;
+}
+function placeProxy() {
+  if (!selected) return;
+  modelRoot.parent.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(selected);
+  box.isEmpty() ? selected.getWorldPosition(proxy.position) : box.getCenter(proxy.position);
+  lastProxy.copy(proxy.position);
+}
+tc.addEventListener('objectChange', () => {
+  if (!selected) return;
+  const d = _v.subVectors(proxy.position, lastProxy);
+  lastProxy.copy(proxy.position);
+  for (const o of movers(selected)) {
+    o.parent.updateMatrixWorld(true);
+    const wp = o.getWorldPosition(new THREE.Vector3()).add(d);
+    o.position.copy(o.parent.worldToLocal(wp));
+    o.updateMatrixWorld(true);
+  }
+});
 function syncMove() {
-  if (moveMode && selected && shown(selected)) { if (tc.object !== selected) tc.attach(selected); }
-  else if (tc.object) tc.detach();
+  if (moveMode && selected && shown(selected) && !tt.on) { if (tc.object !== proxy || proxy.userData.for !== selected) { placeProxy(); proxy.userData.for = selected; tc.attach(proxy); } }
+  else if (tc.object) { tc.detach(); proxy.userData.for = null; }
   syncOutlinerBtns();
 }
 function setMove(on) {
@@ -1267,7 +1321,8 @@ function setMove(on) {
 $('moveBtn').onclick = () => setMove(!moveMode);
 $('resetPosBtn').onclick = () => {
   const reset = o => { const r = o.userData.rest; if (r) { o.position.copy(r.p); o.quaternion.copy(r.q); o.scale.copy(r.s); } };
-  if (selected) reset(selected); else modelObj?.traverse(reset);
+  if (selected) movers(selected).forEach(reset); else modelObj?.traverse(reset);
+  if (tc.object) placeProxy();
 };
 
 // click-select in the viewport (a click, not a drag)
@@ -1289,6 +1344,43 @@ renderer.domElement.addEventListener('pointerup', e => {
   const hit = ray.intersectObjects(records.map(r => r.mesh).filter(shown), false)[0];
   select(hit ? hit.object : null);
 });
+
+// ---------- Turntable (camera stays, the model spins) ----------
+const tt = { on: false, angle: 0, gain: 0, back: null, center: new THREE.Vector3() };
+const TT_PERIOD = 12, Y_AXIS = new THREE.Vector3(0, 1, 0);
+function setTurntable(on) {
+  if (on === tt.on) return;
+  if (on) {
+    if (!records.length) { toast('Load a model first.'); return; }
+    const q = turn.quaternion.clone(), p = turn.position.clone();
+    turn.position.set(0, 0, 0); turn.quaternion.identity(); turn.updateMatrixWorld(true);
+    new THREE.Box3().setFromObject(modelRoot).getCenter(tt.center);
+    turn.position.copy(p); turn.quaternion.copy(q);
+    // put the model's centre in the middle of the view, keeping the current angle and distance
+    cam.position.add(tt.center.clone().sub(controls.target));
+    controls.target.copy(tt.center); controls.update();
+    tt.back = null; tt.on = true;
+  } else { tt.on = false; tt.back = { from: tt.angle, t0: performance.now() }; }
+  $('ttBtn').classList.toggle('on', tt.on);
+  syncMove();
+}
+function updateTurntable(dt) {
+  if (tt.on) {
+    tt.gain = Math.min(1, tt.gain + dt / 0.8);
+    const g = tt.gain * tt.gain * (3 - 2 * tt.gain);           // smooth start
+    tt.angle = (tt.angle + dt * g * (Math.PI * 2 / TT_PERIOD) * +$('ttSpeed').value) % (Math.PI * 2);
+  } else if (tt.back) {                                          // ease back to the original facing
+    tt.gain = 0;
+    const k = Math.min(1, (performance.now() - tt.back.t0) / 700), e = 1 - Math.pow(1 - k, 3);
+    const to = tt.back.from > Math.PI ? Math.PI * 2 : 0;
+    tt.angle = tt.back.from + (to - tt.back.from) * e;
+    if (k === 1) { tt.angle = 0; tt.back = null; }
+  } else return;
+  turn.quaternion.setFromAxisAngle(Y_AXIS, tt.angle);
+  turn.position.copy(tt.center).sub(tt.center.clone().applyQuaternion(turn.quaternion));
+}
+$('ttBtn').onclick = () => setTurntable(!tt.on);
+$('ttSpeed').oninput = e => { $('ttSpeedVal').textContent = (+e.target.value).toFixed(1).replace(/\.0$/, '') + '×'; };
 
 // ---------- Animations ----------
 function setupAnims(root, list) {
@@ -1438,7 +1530,8 @@ function viewLabel() {
 
 const tmpQ = new THREE.Quaternion(), tmpQ2 = new THREE.Quaternion();
 renderer.setAnimationLoop(() => {
-  const dt = clock.getDelta();
+  const dt = Math.min(clock.getDelta(), 0.1);
+  updateTurntable(dt);
   if (mixer) mixer.update(dt);
   if (curAction) {
     const t = curAction.time;
